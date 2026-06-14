@@ -1,0 +1,237 @@
+"""
+rank.py — Main ranking pipeline entry point.
+=============================================
+Wires all scoring modules together, processes the full candidate dataset,
+and outputs a ranked CSV of the top 100 candidates.
+
+CLI
+---
+    python rank.py --candidates ./candidates.jsonl.gz --output ./submission.csv
+    python rank.py --candidates ./data/sample_candidates.json --output ./submission.csv --sample
+"""
+
+from __future__ import annotations
+
+import argparse
+import csv
+import sys
+import time
+from pathlib import Path
+
+# Ensure project root is on sys.path for src imports.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from src.loader import load_candidates, load_company_classifications
+from src.honeypot import flag_honeypots
+from src.embedding_scorer import compute_embedding_scores
+from src.skill_scorer import compute_skill_score
+from src.career_scorer import compute_career_score
+from src.alignment_scorer import compute_alignment_score
+from src.contradiction import compute_contradiction_penalty
+from src.behavioral import compute_behavioral_multiplier
+from src.reasoning import generate_reasoning
+
+# Try importing tqdm for a progress bar; fall back to a no-op wrapper.
+try:
+    from tqdm import tqdm
+except ImportError:
+    def tqdm(iterable, **kwargs):  # type: ignore[misc]
+        return iterable
+
+
+def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Rank candidates against the Redrob Senior ML/AI Engineer JD.",
+    )
+    parser.add_argument(
+        "--candidates",
+        required=True,
+        help="Path to candidate data file (.json, .jsonl, .jsonl.gz)",
+    )
+    parser.add_argument(
+        "--output",
+        default="./submission.csv",
+        help="Output CSV path (default: ./submission.csv)",
+    )
+    parser.add_argument(
+        "--company-map",
+        default="./data/company_classifications.json",
+        help="Path to company classifications JSON (default: ./data/company_classifications.json)",
+    )
+    parser.add_argument(
+        "--sample",
+        action="store_true",
+        help="Process only the first 100 candidates for quick testing.",
+    )
+    return parser.parse_args(argv)
+
+
+def run_pipeline(args: argparse.Namespace) -> None:
+    t_start = time.perf_counter()
+
+    # ═══════════════════════════════════════════════════════════════════
+    # STEP 1: Load data
+    # ═══════════════════════════════════════════════════════════════════
+    candidates = load_candidates(args.candidates)
+    company_map = load_company_classifications(args.company_map)
+
+    if args.sample:
+        candidates = candidates[:100]
+        print(f"[SAMPLE MODE] Using first {len(candidates)} candidates")
+
+    print(f"Loaded {len(candidates)} candidates, {len(company_map)} company classifications")
+
+    # ═══════════════════════════════════════════════════════════════════
+    # STEP 2: Flag honeypots
+    # ═══════════════════════════════════════════════════════════════════
+    honeypot_flags = flag_honeypots(candidates)
+    hp_count = sum(1 for v in honeypot_flags.values() if v[0])
+    print(f"Flagged {hp_count} honeypots")
+
+    # ═══════════════════════════════════════════════════════════════════
+    # STEP 3: Compute embedding scores (batch)
+    # ═══════════════════════════════════════════════════════════════════
+    embedding_scores = compute_embedding_scores(candidates)
+    print("Computed embedding scores")
+
+    # ═══════════════════════════════════════════════════════════════════
+    # STEP 4: Score each candidate
+    # ═══════════════════════════════════════════════════════════════════
+    results: list[dict] = []
+
+    for i, candidate in enumerate(tqdm(candidates, desc="Scoring candidates")):
+        cid = candidate.get("candidate_id", f"UNKNOWN_{i}")
+
+        # a. Skill score
+        skill_score, skill_bd = compute_skill_score(candidate)
+
+        # b. Career score
+        career_score, career_bd = compute_career_score(candidate, company_map)
+
+        # c. Alignment score
+        alignment_score, align_bd = compute_alignment_score(candidate, skill_bd)
+
+        # d. Contradiction penalty
+        contra_mult, contra_reasons = compute_contradiction_penalty(candidate, career_bd)
+
+        # e. Behavioral multiplier
+        signals = candidate.get("redrob_signals") or {}
+        behav_mult, behav_bd = compute_behavioral_multiplier(signals)
+
+        # f. Embedding score
+        emb_score = embedding_scores[i]
+
+        # g. Final score
+        is_honeypot, hp_reason = honeypot_flags.get(cid, (False, None))
+
+        if is_honeypot:
+            final_score = 0.0
+        else:
+            raw_fit = skill_score + career_score + alignment_score + emb_score
+            final_score = raw_fit * contra_mult * behav_mult
+
+        results.append({
+            "candidate_id": cid,
+            "final_score": round(final_score, 4),
+            "skill_score": skill_score,
+            "career_score": career_score,
+            "alignment_score": alignment_score,
+            "embedding_score": emb_score,
+            "contra_mult": contra_mult,
+            "behav_mult": behav_mult,
+            "is_honeypot": is_honeypot,
+            "candidate": candidate,
+            "skill_breakdown": skill_bd,
+            "career_breakdown": career_bd,
+            "align_breakdown": align_bd,
+            "behav_breakdown": behav_bd,
+            "contra_reasons": contra_reasons,
+        })
+
+    # ═══════════════════════════════════════════════════════════════════
+    # STEP 5: Sort — final_score descending, candidate_id ascending as tiebreak
+    # ═══════════════════════════════════════════════════════════════════
+    results.sort(key=lambda r: (-r["final_score"], r["candidate_id"]))
+
+    # ═══════════════════════════════════════════════════════════════════
+    # STEP 6: Take top 100
+    # ═══════════════════════════════════════════════════════════════════
+    top_100 = results[:100]
+
+    # ═══════════════════════════════════════════════════════════════════
+    # STEP 7: Verification
+    # ═══════════════════════════════════════════════════════════════════
+    hp_in_top = sum(1 for r in top_100 if r["is_honeypot"])
+    print(f"\nHoneypots in top 100: {hp_in_top}")
+
+    if top_100:
+        scores = [r["final_score"] for r in top_100]
+        print(f"Score range: {min(scores):.4f} to {max(scores):.4f}")
+
+        print("\nTop 10 candidates:")
+        for j, r in enumerate(top_100[:10], 1):
+            c = r["candidate"]
+            title = (c.get("profile") or {}).get("current_title", "N/A")
+            company = (c.get("profile") or {}).get("current_company", "N/A")
+            print(
+                f"  {j:>3}. {r['candidate_id']}  "
+                f"score={r['final_score']:.4f}  "
+                f"{title} @ {company}"
+            )
+
+    # ═══════════════════════════════════════════════════════════════════
+    # STEP 8: Generate reasoning for top 100
+    # ═══════════════════════════════════════════════════════════════════
+    for r in top_100:
+        subscores = {
+            "skill_score": r["skill_score"],
+            "career_score": r["career_score"],
+            "embedding_score": r["embedding_score"],
+            "behavioral": r["behav_mult"],
+            "skill_breakdown": r["skill_breakdown"],
+        }
+        r["reasoning"] = generate_reasoning(r["candidate"], subscores)
+
+    # ═══════════════════════════════════════════════════════════════════
+    # STEP 9: Write CSV
+    # ═══════════════════════════════════════════════════════════════════
+    output_path = Path(args.output)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    with output_path.open("w", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f, quoting=csv.QUOTE_MINIMAL)
+        writer.writerow(["candidate_id", "rank", "score", "reasoning"])
+
+        seen_ids: set[str] = set()
+        for rank, r in enumerate(top_100, start=1):
+            cid = r["candidate_id"]
+            assert cid not in seen_ids, f"Duplicate candidate_id: {cid}"
+            seen_ids.add(cid)
+
+            writer.writerow([
+                cid,
+                rank,
+                f"{r['final_score']:.4f}",
+                r["reasoning"],
+            ])
+
+    # ═══════════════════════════════════════════════════════════════════
+    # STEP 10: Done
+    # ═══════════════════════════════════════════════════════════════════
+    elapsed = time.perf_counter() - t_start
+    print(f"\nWritten {output_path} with {len(top_100)} candidates")
+    print(f"Total time: {elapsed:.1f}s")
+
+    # Final validation
+    assert len(top_100) == min(100, len(candidates)), (
+        f"Expected {min(100, len(candidates))} rows, got {len(top_100)}"
+    )
+
+
+def main() -> None:
+    args = parse_args()
+    run_pipeline(args)
+
+
+if __name__ == "__main__":
+    main()
