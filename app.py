@@ -19,6 +19,7 @@ import time
 from pathlib import Path
 
 import streamlit as st
+import pandas as pd
 
 # Ensure project root is on sys.path.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -36,7 +37,16 @@ from src.reasoning import generate_reasoning
 
 st.set_page_config(page_title="Redrob Ranker", layout="wide")
 
-MAX_UPLOAD_MB = 10
+MAX_UPLOAD_MB = 1000
+
+@st.cache_data(show_spinner=False)
+def load_cached_candidates(uploaded_file):
+    suffix = "." + uploaded_file.name.split(".")[-1]
+    with tempfile.NamedTemporaryFile(delete=False, suffix=suffix, mode="wb") as tmp:
+        tmp.write(uploaded_file.getvalue())
+        tmp_path = tmp.name
+    return load_candidates(tmp_path)
+
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -82,16 +92,8 @@ if uploaded is not None:
             try:
                 t0 = time.perf_counter()
 
-                # Save to a temp file so loader.py can read it.
-                suffix = "." + uploaded.name.split(".")[-1]
-                with tempfile.NamedTemporaryFile(
-                    delete=False, suffix=suffix, mode="wb"
-                ) as tmp:
-                    tmp.write(uploaded.getvalue())
-                    tmp_path = tmp.name
-
-                with st.spinner("Loading candidates..."):
-                    candidates = load_candidates(tmp_path)
+                with st.spinner("Loading and processing candidates (this may take ~60 seconds)..."):
+                    candidates = load_cached_candidates(uploaded)
 
                 if not candidates:
                     st.warning("No valid candidates found in the file.")
@@ -179,21 +181,22 @@ if uploaded is not None:
 
                     st.dataframe(table_data, use_container_width=True)
 
-                    # Build CSV for download
-                    csv_buffer = io.StringIO()
-                    writer = csv.writer(csv_buffer, quoting=csv.QUOTE_MINIMAL)
-                    writer.writerow(["candidate_id", "rank", "score", "reasoning"])
+                    # Build CSV for download using Pandas
+                    df_data = []
                     for rank, r in enumerate(top_n, 1):
-                        writer.writerow([
-                            r["candidate_id"],
-                            rank,
-                            f"{r['final_score']:.4f}",
-                            r["reasoning"],
-                        ])
+                        df_data.append({
+                            "candidate_id": r["candidate_id"],
+                            "rank": rank,
+                            "score": f"{r['final_score']:.4f}",
+                            "reasoning": r["reasoning"]
+                        })
+                    
+                    df = pd.DataFrame(df_data)
+                    csv_string = df.to_csv(index=False)
 
                     st.download_button(
                         label="Download CSV",
-                        data=csv_buffer.getvalue(),
+                        data=csv_string,
                         file_name="submission.csv",
                         mime="text/csv",
                     )
