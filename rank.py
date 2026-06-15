@@ -15,6 +15,7 @@ from __future__ import annotations
 import argparse
 import csv
 import heapq
+import json
 import sys
 import time
 from pathlib import Path
@@ -60,11 +61,68 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         help="Path to company classifications JSON (default: ./data/company_classifications.json)",
     )
     parser.add_argument(
+        "--llm-features",
+        default="./data/llm_features.jsonl",
+        help=(
+            "Path to offline LLM features JSONL produced by src/llm_extractor.py "
+            "(default: ./data/llm_features.jsonl). "
+            "If the file is missing the pipeline falls back to heuristic-only scoring."
+        ),
+    )
+    parser.add_argument(
         "--sample",
         action="store_true",
         help="Process only the first 100 candidates for quick testing.",
     )
+    parser.add_argument(
+        "--top-ids-output",
+        default="./data/top_1000_ids.txt",
+        help=(
+            "Path to write the top-1000 candidate IDs after Stage 1 scoring. "
+            "This file is then consumed by src/llm_extractor.py --top-ids. "
+            "(default: ./data/top_1000_ids.txt)"
+        ),
+    )
     return parser.parse_args(argv)
+
+
+def load_llm_features(path: str) -> dict[str, dict]:
+    """Load offline LLM features from a JSONL checkpoint file.
+
+    Returns a ``candidate_id -> feature dict`` mapping for O(1) lookup.
+    Returns an empty dict (with a printed warning) if the file does not exist,
+    so the pipeline degrades gracefully to heuristic-only scoring.
+    """
+    file_path = Path(path)
+    if not file_path.exists():
+        print(
+            f"[INFO] LLM features file not found: '{path}'. "
+            "Running in heuristic-only mode (no LLM adjustments)."
+        )
+        return {}
+
+    features: dict[str, dict] = {}
+    skipped = 0
+    with file_path.open("r", encoding="utf-8") as fh:
+        for line in fh:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                record = json.loads(line)
+                cid = record.get("candidate_id")
+                if cid:
+                    features[cid] = record
+                else:
+                    skipped += 1
+            except json.JSONDecodeError:
+                skipped += 1
+
+    print(
+        f"Loaded {len(features)} LLM feature records from {path}"
+        + (f" ({skipped} skipped/malformed)" if skipped else "")
+    )
+    return features
 
 
 def run_pipeline(args: argparse.Namespace) -> None:
@@ -75,6 +133,7 @@ def run_pipeline(args: argparse.Namespace) -> None:
     # ═══════════════════════════════════════════════════════════════════
     candidates = load_candidates(args.candidates)
     company_map = load_company_classifications(args.company_map)
+    llm_features = load_llm_features(args.llm_features)
 
     if args.sample:
         candidates = candidates[:100]
@@ -101,8 +160,8 @@ def run_pipeline(args: argparse.Namespace) -> None:
         # a. Skill score
         skill_score, skill_bd = compute_skill_score(candidate)
 
-        # b. Career score
-        career_score, career_bd = compute_career_score(candidate, company_map)
+        # b. Career score (pass LLM features for adjusted scoring)
+        career_score, career_bd = compute_career_score(candidate, company_map, llm_features)
 
         # c. Alignment score
         alignment_score, align_bd = compute_alignment_score(candidate, skill_bd)
@@ -159,6 +218,15 @@ def run_pipeline(args: argparse.Namespace) -> None:
     )
     # Restore ascending id tie-break (heapq returns highest key first).
     top_pool.sort(key=lambda r: (-r["stage1_score"], r["candidate_id"]))
+
+    # ── Write top-1000 IDs for the offline LLM extractor ─────────────────
+    top_ids_path = Path(args.top_ids_output)
+    top_ids_path.parent.mkdir(parents=True, exist_ok=True)
+    with top_ids_path.open("w", encoding="utf-8") as f:
+        for r in top_pool:
+            f.write(r["candidate_id"] + "\n")
+    print(f"Saved {len(top_pool)} top candidate IDs → {top_ids_path}")
+    print(f"  → Run LLM extractor next:  python -m src.llm_extractor --candidates <your_file> --top-ids {top_ids_path}")
 
     # Build a fast id → candidate dict lookup from the original list (fix 8B).
     # Only materialise full dicts for the top 1000, not all 100K.

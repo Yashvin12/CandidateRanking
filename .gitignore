@@ -133,3 +133,14 @@ India_runs_data_and_ai_challenge/
 llm_precomputation/
 *llm_precomputation*
 *LLM_precomputation*
+
+# Local-only dev/testing directories (kept locally, not tracked in git)
+experiments/
+scripts/
+docs/
+
+# Scratch / temp files
+scratch_*.py
+submission_spec.txt
+sample_submission.csv
+.env

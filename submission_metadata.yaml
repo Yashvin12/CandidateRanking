@@ -1,0 +1,89 @@
+# Redrob Hackathon — Submission Metadata
+# Copy of portal metadata — must match exactly what was submitted via the portal.
+
+# ============================================================================
+# Team identity
+# ============================================================================
+team_name: "Commit Crew"
+
+primary_contact:
+  name: "Yashvin Mehra"
+  email: "yashvinmehra@gmail.com"        # Fill in your registered email
+  phone: "9373912857"        # Fill in your phone number
+
+team_members:
+  - name: "Akanksha Shirke"
+    email: "akankshashirke3107@gmail.com"      # Fill in your email
+    role: "ML Engineer / Team Lead"
+
+# ============================================================================
+# Code and reproducibility
+# ============================================================================
+github_repo: "https://github.com/Yashvin12/CandidateRanking"
+
+sandbox_link: ""   # Fill in your Streamlit Cloud / HuggingFace Space URL once deployed
+
+reproduce_command: "python rank.py --candidates ./India_runs_data_and_ai_challenge/candidates.jsonl --output ./submission.csv"
+
+# ============================================================================
+# Compute environment
+# ============================================================================
+compute:
+  platform: "Windows 11 Local Machine"
+  cpu_cores: 8
+  ram_gb: 16
+  python_version: "3.11"
+  os: "Windows 11"
+  uses_gpu_for_inference: false
+  has_network_during_ranking: false
+  pre_computation_required: true
+  pre_computation_description: >
+    LLM features are extracted offline using src/llm_extractor.py via
+    AWS Bedrock or Groq API before the 5-minute ranking window.
+    The pre-computed features are stored in data/llm_features.jsonl
+    and are included in the repository.
+  pre_computation_time_minutes: 30
+
+# ============================================================================
+# AI tools declaration
+# ============================================================================
+ai_tools_used:
+  - "Antigravity (Google DeepMind coding agent)"
+  - "AWS Bedrock (Mistral) — offline LLM feature extraction only"
+  - "Claude for research and Bug solving"
+
+ai_usage_summary: |
+  Used an AI coding agent (Antigravity) for code architecture review,
+  module design, and implementation assistance. Claude was used for research
+  and bug solving. AWS Bedrock (Mistral) was used exclusively offline for
+  pre-computing candidate features stored in data/llm_features.jsonl — no
+  LLM calls are made during the ranking step. All scoring logic, weights,
+  and thresholds were designed and tuned manually.
+
+# ============================================================================
+# Approach summary
+# ============================================================================
+methodology_summary: |
+  Multi-stage structured ranker with offline LLM feature pre-computation
+  (Architecture B). Stage 1 runs on all 100K candidates: skill-group matching
+  (must-have: retrieval, ML frameworks, Python, NLP/IR — 40 pts), career quality
+  via company-tier classification + title relevance (30 pts), and alignment
+  signals (location, education, notice period — 15 pts). Top-1000 candidates
+  are then scored with a semantic embedding similarity (all-MiniLM-L6-v2 — 15
+  pts). Final reranking applies a multiplicative behavioral modifier (geometric
+  mean of 5 engagement signals: recency, response rate, availability, interview
+  completion, offer acceptance — 0.1–1.0×) and a contradiction penalty (0.5–1.0×)
+  for inconsistent profile signals. Offline LLM features (production retrieval
+  evidence, consulting classification, title mismatch, applied ML years) are
+  injected into the career scorer without adding latency during ranking.
+  Runtime: ~60 seconds for 100K candidates on CPU.
+
+# ============================================================================
+# Declarations
+# ============================================================================
+declarations:
+  read_submission_spec: true
+  code_is_original_work: true
+  no_collusion: true
+  honeypot_check_done: true
+  reproduction_tested: true

@@ -8,12 +8,19 @@ B. **Title relevance** (0–10) — ML/AI titles score highest; non-tech titles 
 C. **Experience depth** (0–8) — 5–9 years is the sweet spot per the JD.
 D. **Description analysis** (adjustments: +3 to −8) — production evidence
    bonuses, non-tech penalties, and title-description mismatch detection.
+E. **LLM features** (optional, adjustments: −15 to +12) — signals extracted
+   offline by ``src/llm_extractor.py`` and passed in as a pre-loaded dict.
+   If the dict is absent the function falls back to heuristic-only scoring.
 
 Usage
 -----
     from src.career_scorer import compute_career_score
 
+    # Heuristic only (no LLM features file)
     score, breakdown = compute_career_score(candidate, company_map)
+
+    # With offline LLM features
+    score, breakdown = compute_career_score(candidate, company_map, llm_features)
 """
 
 from __future__ import annotations
@@ -72,6 +79,7 @@ def _get_map_lower(company_map: dict[str, str]) -> dict[str, str]:
 def compute_career_score(
     candidate: dict,
     company_map: dict[str, str],
+    llm_features: dict[str, dict] | None = None,
 ) -> tuple[float, dict]:
     """Compute career quality score for a candidate.
 
@@ -82,6 +90,10 @@ def compute_career_score(
     company_map:
         Pre-computed mapping of company name → classification string,
         as produced by ``company_classifier.py``.
+    llm_features:
+        Optional mapping of ``candidate_id → feature dict`` pre-loaded from
+        ``data/llm_features.jsonl`` by ``rank.py``.  If ``None`` or the id is
+        absent the function falls back to heuristic-only scoring silently.
 
     Returns
     -------
@@ -107,7 +119,20 @@ def compute_career_score(
         _dimension_description(current_title, career_history)
     )
 
-    raw = company_score + title_score + exp_score + prod_bonus + nontech_penalty + mismatch_penalty
+    # ── E: LLM feature adjustments (optional) ────────────────────────────
+    llm_adj, llm_bd = _dimension_llm(
+        candidate_id  = candidate.get("candidate_id", ""),
+        llm_features  = llm_features,
+        heuristic_consulting_only   = consulting_only,
+        heuristic_title_mismatch    = title_desc_mismatch,
+        heuristic_prod_bonus        = prod_bonus,
+    )
+
+    raw = (
+        company_score + title_score + exp_score
+        + prod_bonus + nontech_penalty + mismatch_penalty
+        + llm_adj
+    )
     total = max(0.0, min(30.0, raw))
 
     breakdown = {
@@ -119,6 +144,8 @@ def compute_career_score(
         "mismatch_penalty": mismatch_penalty,
         "consulting_only": consulting_only,
         "title_description_mismatch": title_desc_mismatch,
+        "llm_adjustment": llm_adj,
+        "llm_breakdown": llm_bd,
         "total": round(total, 2),
     }
     return round(total, 2), breakdown
@@ -245,6 +272,90 @@ def _count_kw_hits(text: str, keywords: list[str]) -> int:
         if kw in text:
             count += 1
     return count
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Dimension E — LLM feature adjustments
+# ═══════════════════════════════════════════════════════════════════════════
+
+# Point values for LLM-extracted signals.
+_LLM_PRODUCTION_RETRIEVAL_BONUS: float =  10.0   # confirmed prod RAG/vector DB
+_LLM_PURE_CONSULTING_PENALTY:    float = -15.0   # entire career at body-shops
+_LLM_TITLE_MISMATCH_PENALTY:     float = -12.0   # ML title + non-tech work
+_LLM_ML_YEARS_BONUS_PER_YEAR:    float =   0.5   # incremental bonus per year of ML
+_LLM_ML_YEARS_BONUS_CAP:         float =   5.0   # cap on the years bonus
+
+
+def _dimension_llm(
+    candidate_id: str,
+    llm_features: dict[str, dict] | None,
+    *,
+    heuristic_consulting_only: bool,
+    heuristic_title_mismatch:  bool,
+    heuristic_prod_bonus:      float,
+) -> tuple[float, dict]:
+    """Apply LLM-extracted signal adjustments.
+
+    Returns (adjustment_points, breakdown_dict).
+    Returns (0.0, {}) when llm_features is None or the candidate has no entry,
+    so the caller degrades silently to pure heuristic scoring.
+
+    Design notes
+    ------------
+    * ``has_production_retrieval`` only adds the LLM bonus when the *heuristic*
+      production bonus was **not already awarded** (>0), avoiding double-dipping.
+    * ``is_pure_consulting`` only applies when the heuristic ``consulting_only``
+      flag is False — i.e. the LLM caught something the company-map missed.
+    * ``title_desc_mismatch`` applies only when the heuristic did *not* already
+      fire, preventing double-stacking of the -8 heuristic and -12 LLM penalty.
+    """
+    if not llm_features or not candidate_id:
+        return 0.0, {"source": "none"}
+
+    feats = llm_features.get(candidate_id)
+    if feats is None:
+        return 0.0, {"source": "missing"}
+
+    adjustment = 0.0
+    breakdown: dict = {"source": "llm"}
+
+    # ── Production retrieval bonus ────────────────────────────────────────
+    has_prod = feats.get("has_production_retrieval", False)
+    prod_bonus_applied = 0.0
+    if has_prod and heuristic_prod_bonus == 0.0:
+        # Heuristic missed it; trust the LLM.
+        prod_bonus_applied = _LLM_PRODUCTION_RETRIEVAL_BONUS
+        adjustment += prod_bonus_applied
+    breakdown["has_production_retrieval"] = has_prod
+    breakdown["production_retrieval_bonus"] = prod_bonus_applied
+
+    # ── Pure consulting penalty ───────────────────────────────────────────
+    is_pure_consulting = feats.get("is_pure_consulting", False)
+    consulting_penalty_applied = 0.0
+    if is_pure_consulting and not heuristic_consulting_only:
+        consulting_penalty_applied = _LLM_PURE_CONSULTING_PENALTY
+        adjustment += consulting_penalty_applied
+    breakdown["is_pure_consulting"] = is_pure_consulting
+    breakdown["consulting_penalty"] = consulting_penalty_applied
+
+    # ── Title–description mismatch penalty ───────────────────────────────
+    title_mismatch = feats.get("title_desc_mismatch", False)
+    mismatch_penalty_applied = 0.0
+    if title_mismatch and not heuristic_title_mismatch:
+        mismatch_penalty_applied = _LLM_TITLE_MISMATCH_PENALTY
+        adjustment += mismatch_penalty_applied
+    breakdown["title_desc_mismatch"] = title_mismatch
+    breakdown["mismatch_penalty"] = mismatch_penalty_applied
+
+    # ── Years of applied ML bonus ─────────────────────────────────────────
+    years_ml = max(0, int(feats.get("years_applied_ml", 0)))
+    ml_years_bonus = min(years_ml * _LLM_ML_YEARS_BONUS_PER_YEAR, _LLM_ML_YEARS_BONUS_CAP)
+    adjustment += ml_years_bonus
+    breakdown["years_applied_ml"] = years_ml
+    breakdown["ml_years_bonus"] = ml_years_bonus
+
+    breakdown["total_adjustment"] = round(adjustment, 2)
+    return round(adjustment, 2), breakdown
 
 
 def _count_kw_hits_deduped(roles: list[dict], keywords: list[str]) -> int:

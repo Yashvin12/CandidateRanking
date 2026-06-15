@@ -108,7 +108,7 @@ _NON_TECH_SUBSTRINGS:  list[str] = [
 # Core classification logic
 # ═══════════════════════════════════════════════════════════════════════════
 
-def classify_companies(candidates: list[dict]) -> dict[str, str]:
+def classify_companies(candidates: list[dict]) -> tuple[dict[str, str], int]:
     """Classify every unique company found across all candidates.
 
     Parameters
@@ -118,8 +118,8 @@ def classify_companies(candidates: list[dict]) -> dict[str, str]:
 
     Returns
     -------
-    dict[str, str]
-        Mapping of original company name → classification string.
+    tuple[dict[str, str], int]
+        Mapping of original company name → classification string, and the number of unique (company, industry, company_size) tuples.
     """
 
     # ── Pass 1: collect per-company data ─────────────────────────────────
@@ -130,12 +130,21 @@ def classify_companies(candidates: list[dict]) -> dict[str, str]:
     titles_by_company:       dict[str, list[str]]  = defaultdict(list)
     descriptions_by_company: dict[str, list[str]]  = defaultdict(list)
     original_names:          dict[str, str]         = {}  # norm → first-seen form
+    unique_tuples:           set[tuple[str, str, str]] = set()
 
     for candidate in candidates:
         for role in candidate.get("career_history", []):
             company_raw = role.get("company", "")
             if not company_raw or not isinstance(company_raw, str):
                 continue
+                
+            industry_raw = role.get("industry", "")
+            if not isinstance(industry_raw, str): industry_raw = ""
+            
+            size_raw = role.get("company_size", "")
+            if not isinstance(size_raw, str): size_raw = ""
+
+            unique_tuples.add((company_raw.strip(), industry_raw.strip(), size_raw.strip()))
 
             key = _normalise(company_raw)
 
@@ -143,9 +152,8 @@ def classify_companies(candidates: list[dict]) -> dict[str, str]:
             if key not in original_names:
                 original_names[key] = company_raw.strip()
 
-            industry = role.get("industry", "")
-            if industry and isinstance(industry, str):
-                industries_by_company[key].append(industry.strip())
+            if industry_raw:
+                industries_by_company[key].append(industry_raw.strip())
 
             title = role.get("title", "")
             if title and isinstance(title, str):
@@ -184,7 +192,7 @@ def classify_companies(candidates: list[dict]) -> dict[str, str]:
         # TIER 4 — fallback
         classifications[display_name] = "unknown"
 
-    return classifications
+    return classifications, len(unique_tuples)
 
 
 # ─── Tier helpers ────────────────────────────────────────────────────────
@@ -258,7 +266,7 @@ def _tier3_employee_signals(
 # Output + CLI
 # ═══════════════════════════════════════════════════════════════════════════
 
-def _write_output(classifications: dict[str, str], output_path: str) -> None:
+def _write_output(classifications: dict[str, str], unique_count: int, output_path: str) -> None:
     """Write the classification map to JSON and print a summary."""
     out = Path(output_path)
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -267,12 +275,13 @@ def _write_output(classifications: dict[str, str], output_path: str) -> None:
         json.dump(classifications, f, indent=2, ensure_ascii=False)
 
     counts: dict[str, int] = Counter(classifications.values())
-    n = len(classifications)
-    parts = [
-        f"{counts.get(k, 0)} {k}"
-        for k in ("product", "consulting", "research", "non_tech", "unknown")
-    ]
-    print(f"{n} companies classified: {', '.join(parts)}")
+    print(f"Summary:")
+    print(f"  total unique companies found: {unique_count}")
+    print(f"  classified as product: {counts.get('product', 0)}")
+    print(f"  classified as consulting: {counts.get('consulting', 0)}")
+    print(f"  classified as unknown: {counts.get('unknown', 0)}")
+    print(f"  classified as research: {counts.get('research', 0)}")
+    print(f"  classified as non_tech: {counts.get('non_tech', 0)}")
     print(f"Written to {out}")
 
 
@@ -304,8 +313,8 @@ def main(argv: list[str] | None = None) -> None:
         candidates = candidates[:1000]
         print(f"[SAMPLE MODE] Using first {len(candidates)} candidates")
 
-    classifications = classify_companies(candidates)
-    _write_output(classifications, args.output)
+    classifications, unique_count = classify_companies(candidates)
+    _write_output(classifications, unique_count, args.output)
 
 
 if __name__ == "__main__":
