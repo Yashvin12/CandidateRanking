@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import heapq
 import sys
 import time
 from pathlib import Path
@@ -131,7 +132,9 @@ def run_pipeline(args: argparse.Namespace) -> None:
             "contra_mult": contra_mult,
             "behav_mult": behav_mult,
             "is_honeypot": is_honeypot,
-            "candidate": candidate,
+            # Do NOT store the full candidate dict for all 100K records — that
+            # would use ~700 MB of RAM (fix 8B).  Store only the id; the full
+            # dict is fetched from candidate_index for the top-1000 pool only.
             "skill_breakdown": skill_bd,
             "career_breakdown": career_bd,
             "align_breakdown": align_bd,
@@ -143,19 +146,37 @@ def run_pipeline(args: argparse.Namespace) -> None:
     print(f"Stage 1 completed in {t_stage1_elapsed:.1f}s")
 
     # ═══════════════════════════════════════════════════════════════════
-    # STEP 4: Sort and keep Top 5000
+    # STEP 4: Get Top 1000 using heapq.nlargest (O(n log k) vs O(n log n) sort)
     # ═══════════════════════════════════════════════════════════════════
-    stage1_results.sort(key=lambda r: (-r["stage1_score"], r["candidate_id"]))
-    top_5000_results = stage1_results[:5000]
+    # Max embedding swing is 15 points — not enough for rank 1000 to
+    # jump past rank 100 by structured score.  Keeping 1000 instead of
+    # 5000 cuts embedding time by 5×.
+    # heapq.nlargest is significantly faster than sort + slice for large n (fix 8A).
+    top_pool = heapq.nlargest(
+        1000,
+        stage1_results,
+        key=lambda r: (r["stage1_score"], r["candidate_id"]),  # stable tie-break
+    )
+    # Restore ascending id tie-break (heapq returns highest key first).
+    top_pool.sort(key=lambda r: (-r["stage1_score"], r["candidate_id"]))
+
+    # Build a fast id → candidate dict lookup from the original list (fix 8B).
+    # Only materialise full dicts for the top 1000, not all 100K.
+    candidate_index: dict[str, dict] = {
+        c["candidate_id"]: c for c in candidates
+        if c.get("candidate_id") in {r["candidate_id"] for r in top_pool}
+    }
+    for r in top_pool:
+        r["candidate"] = candidate_index.get(r["candidate_id"], {})
 
     # ═══════════════════════════════════════════════════════════════════
-    # STEP 5: Stage 2 Embedding Scoring on Top 5000
+    # STEP 5: Stage 2 Embedding Scoring on Top 1000
     # ═══════════════════════════════════════════════════════════════════
     t_emb_start = time.perf_counter()
-    top_5000_candidates = [r["candidate"] for r in top_5000_results]
-    print(f"Computing embeddings for top {len(top_5000_candidates)} candidates...")
+    top_pool_candidates = [r["candidate"] for r in top_pool]
+    print(f"Computing embeddings for top {len(top_pool_candidates)} candidates...")
     
-    embedding_scores = compute_embedding_scores(top_5000_candidates)
+    embedding_scores = compute_embedding_scores(top_pool_candidates)
     
     t_emb_elapsed = time.perf_counter() - t_emb_start
     print(f"Embedding stage completed in {t_emb_elapsed:.1f}s")
@@ -164,7 +185,7 @@ def run_pipeline(args: argparse.Namespace) -> None:
     # STEP 6: Final Scoring & Re-rank
     # ═══════════════════════════════════════════════════════════════════
     results = []
-    for i, r in enumerate(top_5000_results):
+    for i, r in enumerate(top_pool):
         emb_score = embedding_scores[i]
         r["embedding_score"] = emb_score
         

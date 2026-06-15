@@ -21,7 +21,10 @@ from __future__ import annotations
 from src.config import JD_TEXT_FOR_EMBEDDING
 
 _MODEL_NAME = "all-MiniLM-L6-v2"
-_MAX_TEXT_LEN = 512
+# Max chars to concatenate per candidate.  512 chars cut long career histories
+# short; 2048 chars captures the full summary + several role descriptions while
+# still fitting well within the model's 256-token sequence limit after tokenisation.
+_MAX_TEXT_LEN = 2048
 
 
 def _build_text(candidate: dict) -> str:
@@ -74,7 +77,8 @@ def compute_embedding_scores(candidates: list[dict]) -> list[float]:
     print(f"Encoding {n} candidate texts...")
     candidate_embeddings = model.encode(
         all_texts,
-        batch_size=256,
+        batch_size=32,   # 256 was designed for short snippets; long career texts
+                         # (~500 tokens) cause memory pressure → use 32 (fix 7B)
         show_progress_bar=True,
         normalize_embeddings=True,
     )

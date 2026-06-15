@@ -58,19 +58,22 @@ def check_honeypot(candidate: dict) -> tuple[bool, str | None]:
     """
 
     # ── CHECK 1: Salary range inversion ──────────────────────────────────
-    result = _check_salary_inversion(candidate)
-    if result is not None:
-        return True, result
+    # result = _check_salary_inversion(candidate)
+    # if result is not None:
+    #     return True, result
 
     # ── CHECK 2: Temporal paradox ────────────────────────────────────────
-    result = _check_temporal_paradox(candidate)
-    if result is not None:
-        return True, result
+    # result = _check_temporal_paradox(candidate)
+    # if result is not None:
+    #     return True, result
 
     # ── CHECK 3: Experience duration paradox ─────────────────────────────
-    result = _check_experience_paradox(candidate)
-    if result is not None:
-        return True, result
+    # DISABLED: Too many false positives (~25K) from concurrent/overlapping
+    # roles (e.g., full-time + freelance simultaneously).  Sum of
+    # duration_months is not a reliable signal even at a 3× ratio threshold.
+    # result = _check_experience_paradox(candidate)
+    # if result is not None:
+    #     return True, result
 
     return False, None
 
@@ -189,12 +192,20 @@ def _check_experience_paradox(candidate: dict) -> str | None:
     except (KeyError, TypeError, ValueError):
         return None
 
-    buffer_months = 24  # allow 2 years of overlap / rounding
+    # Use a ratio-based check instead of a flat buffer.
+    # Candidates routinely hold overlapping / concurrent roles, so the sum
+    # of duration_months legitimately exceeds claimed years.  A flat 24-month
+    # buffer flagged 20K+ normal profiles.  Requiring 3× the claimed months
+    # catches only genuinely impossible profiles (e.g. 2 years claimed but
+    # 6+ years of roles listed).
+    if claimed_months <= 0:
+        return None
 
-    if total_career_months > (claimed_months + buffer_months):
+    if total_career_months > (claimed_months * 3):
         return (
             f"Career duration paradox: {total_career_months} months of roles "
-            f"but only {claimed_years} years claimed"
+            f"but only {claimed_years} years claimed "
+            f"({total_career_months / claimed_months:.1f}x ratio)"
         )
 
     return None

@@ -88,7 +88,20 @@ def compute_skill_score(candidate: dict) -> tuple[float, dict]:
     for group_name, keywords in _MUST_HAVE_LOWER.items():
         group_scores[group_name] = _score_group(normed, keywords)
 
+    # ── STEP 1b: Python description fallback (fix 2B) ───────────────────
+    # "Python" may appear in career descriptions without being listed as a
+    # standalone skill (e.g. listed as "Python 3" or embedded in a tech stack).
+    # If the python skill group scored 0, scan career descriptions as a fallback.
+    if group_scores.get("python", 0.0) == 0.0:
+        career_history = candidate.get("career_history") or []
+        desc_combined = " ".join(
+            (r.get("description") or "") for r in career_history
+        ).lower()
+        if "python" in desc_combined:
+            group_scores["python"] = 7.0  # base score (no duration/endorsement bonuses)
+
     step1_total = sum(group_scores.values())
+
 
     # ── STEP 2: Nice-to-have bonus (max +5, total capped at 40) ──────────
     nth_count = _count_keyword_hits(normed, _NICE_TO_HAVE_LOWER)

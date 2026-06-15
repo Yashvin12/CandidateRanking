@@ -50,6 +50,20 @@ _COMPANY_POINTS: dict[str, int] = {
     "unknown": 2,
 }
 
+# ── Cache for lowercase company map (avoid rebuilding 100K times) ────
+_map_cache_id: int | None = None
+_map_cache_lower: dict[str, str] = {}
+
+
+def _get_map_lower(company_map: dict[str, str]) -> dict[str, str]:
+    """Return a lowercased version of company_map, cached across calls."""
+    global _map_cache_id, _map_cache_lower
+    cid = id(company_map)
+    if cid != _map_cache_id:
+        _map_cache_lower = {k.strip().lower(): v for k, v in company_map.items()}
+        _map_cache_id = cid
+    return _map_cache_lower
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Public API
@@ -121,8 +135,8 @@ def _dimension_company(
     if not career_history:
         return 0.0, False
 
-    # Build a case-insensitive lookup from the company_map.
-    map_lower: dict[str, str] = {k.strip().lower(): v for k, v in company_map.items()}
+    # Use cached lowercase lookup (built once, reused for all 100K candidates).
+    map_lower = _get_map_lower(company_map)
 
     points = 0
     all_consulting = True
@@ -225,6 +239,7 @@ def _dimension_experience(years: float | int | None) -> float:
 # ═══════════════════════════════════════════════════════════════════════════
 
 def _count_kw_hits(text: str, keywords: list[str]) -> int:
+    """Count unique keywords present in text (each keyword counted at most once)."""
     count = 0
     for kw in keywords:
         if kw in text:
@@ -232,22 +247,43 @@ def _count_kw_hits(text: str, keywords: list[str]) -> int:
     return count
 
 
+def _count_kw_hits_deduped(roles: list[dict], keywords: list[str]) -> int:
+    """Count keywords that appear in AT LEAST ONE role description.
+
+    This prevents recycled (copy-pasted) descriptions from inflating counts.
+    Each keyword is counted at most once regardless of how many roles contain it.
+    """
+    found: set[str] = set()
+    for role in roles:
+        desc = (role.get("description") or "").lower()
+        if not desc:
+            continue
+        for kw in keywords:
+            if kw not in found and kw in desc:
+                found.add(kw)
+    return len(found)
+
+
 def _dimension_description(
     current_title: str,
     career_history: list[dict],
 ) -> tuple[float, float, float, bool]:
     """Returns (production_bonus, nontech_penalty, mismatch_penalty,
-    title_description_mismatch)."""
+    title_description_mismatch).
+
+    Uses per-role deduplication so that recycled / copy-pasted descriptions
+    don't multiply keyword counts.  Each keyword is counted at most once
+    regardless of how many roles mention it (fixes 3A and 3B).
+    """
     if not career_history:
         return 0.0, 0.0, 0.0, False
 
-    combined = " ".join(
-        role.get("description") or "" for role in career_history
-    ).lower()
-
-    production_count = _count_kw_hits(combined, _PROD_KW_LOWER)
-    code_count = _count_kw_hits(combined, _CODE_KW_LOWER)       # tracked, not used in score
-    nontech_count = _count_kw_hits(combined, _NONTECH_KW_LOWER)
+    # Deduplicated counts: a keyword found in 5 identical descriptions still
+    # counts as 1.  Only the *presence* of a keyword across any role matters.
+    production_count = _count_kw_hits_deduped(career_history, _PROD_KW_LOWER)
+    nontech_count    = _count_kw_hits_deduped(career_history, _NONTECH_KW_LOWER)
+    # code_count tracked for potential future use, not applied to score.
+    # code_count = _count_kw_hits_deduped(career_history, _CODE_KW_LOWER)
 
     # Production bonus
     if production_count >= 3:

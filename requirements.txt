@@ -3,3 +3,6 @@ sentence-transformers
 orjson
 tqdm
 numpy
+pandas
+psutil
+torchvision

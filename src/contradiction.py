@@ -80,7 +80,9 @@ def compute_contradiction_penalty(
             reasons.append(f"{suspect} skills claimed advanced/expert with <6mo duration")
 
     # ── CHECK 2: Many skills + zero assessments ──────────────────────────
-    if has_skills and len(skills) >= 10:
+    # Threshold raised to 20 (from 10) — 10+ skills with no assessments is
+    # common for legitimate candidates; 20+ with zero is genuinely suspicious.
+    if has_skills and len(skills) >= 20:
         assessments = signals.get("skill_assessment_scores")
         if not assessments:  # None, {}, or missing
             count += 1
@@ -151,10 +153,23 @@ def compute_contradiction_penalty(
                 )
 
     # ── CHECK 7: Summary mentions different role than title ──────────────
+    # Guard: only flag accounts that are at least 6 months old so that
+    # recent 2026 signups (who may not have filled out everything yet) are
+    # not penalised for incomplete data (fixes 5B).
+    signup_raw = signals.get("signup_date")
+    signup_recent = False
+    if signup_raw:
+        from src.honeypot import _parse_date as _hp_parse_date
+        sd = _hp_parse_date(signup_raw)
+        if sd is not None:
+            from datetime import date as _date
+            days_since_signup = (_date(2026, 6, 15) - sd).days
+            signup_recent = days_since_signup < 180  # < 6 months old
+
     summary = (profile.get("summary") or "").lower()
     title = (profile.get("current_title") or "").lower()
 
-    if summary and title:
+    if summary and title and not signup_recent:
         for role_kw, domain_word in _ROLE_MISMATCHES:
             if role_kw in summary and domain_word not in title:
                 # Hard contradiction: summary says one role, title says engineer/scientist
@@ -168,15 +183,17 @@ def compute_contradiction_penalty(
                 break  # one mismatch is enough
 
     # ── Convert count → multiplier ───────────────────────────────────────
-    if count == 0:
-        multiplier = 1.0
-    elif count <= 1:
-        multiplier = 0.85
-    elif count <= 2:
-        multiplier = 0.7
-    elif count <= 3:
-        multiplier = 0.55
-    else:
+    # Use > comparisons evaluated from highest severity to lowest so that
+    # the 0.5 (soft mismatch) float value lands in the correct band (fixes 5C).
+    if count > 3:
         multiplier = 0.5
+    elif count > 2:
+        multiplier = 0.55
+    elif count > 1:
+        multiplier = 0.7
+    elif count > 0:
+        multiplier = 0.85
+    else:
+        multiplier = 1.0
 
     return multiplier, reasons

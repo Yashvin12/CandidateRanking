@@ -149,9 +149,10 @@ def main():
     for idx, r in enumerate(top_100, 1):
         out.append(f"| {idx} | {r['candidate_id']} | {r['final_score']:.4f} | {r['skill_score']} | {r['career_score']} | {r['alignment_score']} | {r['embedding_score']} | {r['contra_mult']} | {r['behav_mult']} |")
 
-    with open("c:/Users/Akanksha Shirke/.gemini/antigravity-ide/brain/bbed9454-3261-48a5-b6e7-3ffdf2f92f50/full_pipeline_validation.md", "w") as f:
+    output_path = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "full_pipeline_validation.md"))
+    with open(output_path, "w", encoding="utf-8") as f:
         f.write("\n".join(out))
-    print("Done. Wrote full_pipeline_validation.md")
+    print(f"Done. Wrote {output_path}")
 
 if __name__ == '__main__':
     main()

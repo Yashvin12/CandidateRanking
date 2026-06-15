@@ -11,7 +11,7 @@ To tune the pipeline, edit this file only.
 # Used for calculating "days since last active" across the pipeline.
 # ══════════════════════════════════════════════════════════════════════════════
 
-REFERENCE_DATE: str = "2026-06-01"
+REFERENCE_DATE: str = "2026-06-15"
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -352,7 +352,6 @@ NICE_TO_HAVE_SKILLS: list[str] = [
     "inference optimization",
     "HR-tech",
     "recruiting tech",
-    "marketplace",
 ]
 
 # ---------------------------------------------------------------------------

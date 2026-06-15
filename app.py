@@ -1,7 +1,11 @@
 """
 app.py — Streamlit sandbox for the Redrob Candidate Ranker.
 ============================================================
-Deploys on HuggingFace Spaces.  Handles small sample files (≤100 candidates).
+Deploys on HuggingFace Spaces.  Handles large files (up to 1 GB).
+Uses the same two-stage pipeline as rank.py:
+  Stage 1 — cheap structured scoring on all candidates
+  Stage 2 — expensive embedding scoring on top 1000 only
+
 Works without company_classifications.json — falls back to seed lists only.
 
 Run locally:
@@ -11,6 +15,7 @@ Run locally:
 from __future__ import annotations
 
 import csv
+import heapq
 import io
 import json
 import sys
@@ -76,7 +81,7 @@ st.title("Redrob Candidate Ranker")
 st.markdown("**Intelligent Candidate Discovery & Ranking System**")
 
 uploaded = st.file_uploader(
-    "Upload candidate file (.json or .jsonl — small samples only)",
+    "Upload candidate file (.json or .jsonl)",
     type=["json", "jsonl"],
 )
 
@@ -92,7 +97,7 @@ if uploaded is not None:
             try:
                 t0 = time.perf_counter()
 
-                with st.spinner("Loading and processing candidates (this may take ~60 seconds)..."):
+                with st.spinner("Loading and processing candidates..."):
                     candidates = load_cached_candidates(uploaded)
 
                 if not candidates:
@@ -101,59 +106,126 @@ if uploaded is not None:
                     # No company map in sandbox — empty dict forces seed-list fallback.
                     company_map: dict[str, str] = {}
 
+                    # ───────────────────────────────────────────────────
+                    # Honeypot detection
+                    # ───────────────────────────────────────────────────
                     with st.spinner("Detecting honeypots..."):
                         honeypot_flags = flag_honeypots(candidates)
                         hp_count = sum(1 for v in honeypot_flags.values() if v[0])
 
-                    with st.spinner("Computing embeddings..."):
-                        embedding_scores = compute_embedding_scores(candidates)
+                    # ───────────────────────────────────────────────────
+                    # Stage 1: Cheap structured scoring on ALL candidates
+                    # ───────────────────────────────────────────────────
+                    progress_bar = st.progress(0, text="Stage 1: Structured scoring...")
+                    stage1_results: list[dict] = []
+                    n_candidates = len(candidates)
 
-                    with st.spinner("Scoring candidates..."):
-                        results: list[dict] = []
-                        for i, candidate in enumerate(candidates):
-                            cid = candidate.get("candidate_id", f"UNKNOWN_{i}")
+                    for i, candidate in enumerate(candidates):
+                        cid = candidate.get("candidate_id", f"UNKNOWN_{i}")
 
-                            skill_score, skill_bd = compute_skill_score(candidate)
-                            career_score, career_bd = compute_career_score(
-                                candidate, company_map
+                        skill_score, skill_bd = compute_skill_score(candidate)
+                        career_score, career_bd = compute_career_score(
+                            candidate, company_map
+                        )
+                        alignment_score, align_bd = compute_alignment_score(
+                            candidate, skill_bd
+                        )
+                        contra_mult, contra_reasons = compute_contradiction_penalty(
+                            candidate, career_bd
+                        )
+                        signals = candidate.get("redrob_signals") or {}
+                        behav_mult, behav_bd = compute_behavioral_multiplier(signals)
+
+                        is_hp, _ = honeypot_flags.get(cid, (False, None))
+
+                        if is_hp:
+                            stage1_score = 0.0
+                        else:
+                            raw_fit = skill_score + career_score + alignment_score
+                            stage1_score = raw_fit * contra_mult * behav_mult
+
+                        stage1_results.append({
+                            "candidate_id": cid,
+                            "stage1_score": stage1_score,
+                            "skill_score": skill_score,
+                            "career_score": career_score,
+                            "alignment_score": alignment_score,
+                            "contra_mult": contra_mult,
+                            "behav_mult": behav_mult,
+                            "is_honeypot": is_hp,
+                            "skill_breakdown": skill_bd,
+                        })
+
+                        # Update progress bar every 1000 candidates
+                        if (i + 1) % 1000 == 0 or i == n_candidates - 1:
+                            progress_bar.progress(
+                                (i + 1) / n_candidates,
+                                text=f"Stage 1: Scored {i + 1}/{n_candidates} candidates",
                             )
-                            alignment_score, align_bd = compute_alignment_score(
-                                candidate, skill_bd
+
+                    progress_bar.progress(1.0, text="Stage 1 complete!")
+
+                    # ───────────────────────────────────────────────────
+                    # Select top 1000 for embedding (same as rank.py)
+                    # ───────────────────────────────────────────────────
+                    top_pool_size = min(1000, len(stage1_results))
+                    top_pool = heapq.nlargest(
+                        top_pool_size,
+                        stage1_results,
+                        key=lambda r: (r["stage1_score"], r["candidate_id"]),
+                    )
+                    top_pool.sort(key=lambda r: (-r["stage1_score"], r["candidate_id"]))
+
+                    # Build id → candidate lookup for top pool only
+                    top_ids = {r["candidate_id"] for r in top_pool}
+                    candidate_index = {
+                        c["candidate_id"]: c for c in candidates
+                        if c.get("candidate_id") in top_ids
+                    }
+
+                    # ───────────────────────────────────────────────────
+                    # Stage 2: Embedding scoring on top 1000 ONLY
+                    # ───────────────────────────────────────────────────
+                    with st.spinner(f"Stage 2: Computing embeddings for top {len(top_pool)} candidates..."):
+                        top_pool_candidates = [
+                            candidate_index.get(r["candidate_id"], {})
+                            for r in top_pool
+                        ]
+                        embedding_scores = compute_embedding_scores(top_pool_candidates)
+
+                    # ───────────────────────────────────────────────────
+                    # Final scoring & re-rank
+                    # ───────────────────────────────────────────────────
+                    results: list[dict] = []
+                    for i, r in enumerate(top_pool):
+                        emb_score = embedding_scores[i]
+
+                        if r["is_honeypot"]:
+                            final_score = 0.0
+                        else:
+                            raw_fit = (
+                                r["skill_score"]
+                                + r["career_score"]
+                                + r["alignment_score"]
+                                + emb_score
                             )
-                            contra_mult, contra_reasons = compute_contradiction_penalty(
-                                candidate, career_bd
-                            )
-                            signals = candidate.get("redrob_signals") or {}
-                            behav_mult, behav_bd = compute_behavioral_multiplier(signals)
-                            emb_score = embedding_scores[i]
+                            final_score = raw_fit * r["contra_mult"] * r["behav_mult"]
 
-                            is_hp, _ = honeypot_flags.get(cid, (False, None))
+                        subscores = {
+                            "skill_score": r["skill_score"],
+                            "career_score": r["career_score"],
+                            "embedding_score": emb_score,
+                            "behavioral": r["behav_mult"],
+                            "skill_breakdown": r["skill_breakdown"],
+                        }
 
-                            if is_hp:
-                                final_score = 0.0
-                            else:
-                                raw_fit = (
-                                    skill_score
-                                    + career_score
-                                    + alignment_score
-                                    + emb_score
-                                )
-                                final_score = raw_fit * contra_mult * behav_mult
-
-                            subscores = {
-                                "skill_score": skill_score,
-                                "career_score": career_score,
-                                "embedding_score": emb_score,
-                                "behavioral": behav_mult,
-                                "skill_breakdown": skill_bd,
-                            }
-
-                            results.append({
-                                "candidate_id": cid,
-                                "final_score": round(final_score, 4),
-                                "reasoning": generate_reasoning(candidate, subscores),
-                                "is_honeypot": is_hp,
-                            })
+                        candidate_data = candidate_index.get(r["candidate_id"], {})
+                        results.append({
+                            "candidate_id": r["candidate_id"],
+                            "final_score": round(final_score, 4),
+                            "reasoning": generate_reasoning(candidate_data, subscores),
+                            "is_honeypot": r["is_honeypot"],
+                        })
 
                     # Sort and take top 100
                     results.sort(
