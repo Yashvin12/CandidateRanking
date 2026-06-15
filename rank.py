@@ -89,17 +89,12 @@ def run_pipeline(args: argparse.Namespace) -> None:
     print(f"Flagged {hp_count} honeypots")
 
     # ═══════════════════════════════════════════════════════════════════
-    # STEP 3: Compute embedding scores (batch)
+    # STEP 3: Stage 1 Structured Scoring
     # ═══════════════════════════════════════════════════════════════════
-    embedding_scores = compute_embedding_scores(candidates)
-    print("Computed embedding scores")
+    t_stage1_start = time.perf_counter()
+    stage1_results: list[dict] = []
 
-    # ═══════════════════════════════════════════════════════════════════
-    # STEP 4: Score each candidate
-    # ═══════════════════════════════════════════════════════════════════
-    results: list[dict] = []
-
-    for i, candidate in enumerate(tqdm(candidates, desc="Scoring candidates")):
+    for i, candidate in enumerate(tqdm(candidates, desc="Stage 1: Structured Scoring")):
         cid = candidate.get("candidate_id", f"UNKNOWN_{i}")
 
         # a. Skill score
@@ -118,25 +113,21 @@ def run_pipeline(args: argparse.Namespace) -> None:
         signals = candidate.get("redrob_signals") or {}
         behav_mult, behav_bd = compute_behavioral_multiplier(signals)
 
-        # f. Embedding score
-        emb_score = embedding_scores[i]
-
-        # g. Final score
+        # Stage 1 Score
         is_honeypot, hp_reason = honeypot_flags.get(cid, (False, None))
-
+        
         if is_honeypot:
-            final_score = 0.0
+            stage1_score = 0.0
         else:
-            raw_fit = skill_score + career_score + alignment_score + emb_score
-            final_score = raw_fit * contra_mult * behav_mult
+            raw_fit_stage1 = skill_score + career_score + alignment_score
+            stage1_score = raw_fit_stage1 * contra_mult * behav_mult
 
-        results.append({
+        stage1_results.append({
             "candidate_id": cid,
-            "final_score": round(final_score, 4),
+            "stage1_score": stage1_score,
             "skill_score": skill_score,
             "career_score": career_score,
             "alignment_score": alignment_score,
-            "embedding_score": emb_score,
             "contra_mult": contra_mult,
             "behav_mult": behav_mult,
             "is_honeypot": is_honeypot,
@@ -148,14 +139,45 @@ def run_pipeline(args: argparse.Namespace) -> None:
             "contra_reasons": contra_reasons,
         })
 
-    # ═══════════════════════════════════════════════════════════════════
-    # STEP 5: Sort — final_score descending, candidate_id ascending as tiebreak
-    # ═══════════════════════════════════════════════════════════════════
-    results.sort(key=lambda r: (-r["final_score"], r["candidate_id"]))
+    t_stage1_elapsed = time.perf_counter() - t_stage1_start
+    print(f"Stage 1 completed in {t_stage1_elapsed:.1f}s")
 
     # ═══════════════════════════════════════════════════════════════════
-    # STEP 6: Take top 100
+    # STEP 4: Sort and keep Top 5000
     # ═══════════════════════════════════════════════════════════════════
+    stage1_results.sort(key=lambda r: (-r["stage1_score"], r["candidate_id"]))
+    top_5000_results = stage1_results[:5000]
+
+    # ═══════════════════════════════════════════════════════════════════
+    # STEP 5: Stage 2 Embedding Scoring on Top 5000
+    # ═══════════════════════════════════════════════════════════════════
+    t_emb_start = time.perf_counter()
+    top_5000_candidates = [r["candidate"] for r in top_5000_results]
+    print(f"Computing embeddings for top {len(top_5000_candidates)} candidates...")
+    
+    embedding_scores = compute_embedding_scores(top_5000_candidates)
+    
+    t_emb_elapsed = time.perf_counter() - t_emb_start
+    print(f"Embedding stage completed in {t_emb_elapsed:.1f}s")
+
+    # ═══════════════════════════════════════════════════════════════════
+    # STEP 6: Final Scoring & Re-rank
+    # ═══════════════════════════════════════════════════════════════════
+    results = []
+    for i, r in enumerate(top_5000_results):
+        emb_score = embedding_scores[i]
+        r["embedding_score"] = emb_score
+        
+        if r["is_honeypot"]:
+            final_score = 0.0
+        else:
+            raw_fit = r["skill_score"] + r["career_score"] + r["alignment_score"] + emb_score
+            final_score = raw_fit * r["contra_mult"] * r["behav_mult"]
+            
+        r["final_score"] = round(final_score, 4)
+        results.append(r)
+
+    results.sort(key=lambda r: (-r["final_score"], r["candidate_id"]))
     top_100 = results[:100]
 
     # ═══════════════════════════════════════════════════════════════════
