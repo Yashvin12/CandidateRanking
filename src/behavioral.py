@@ -50,7 +50,9 @@ def compute_behavioral_multiplier(signals: dict) -> tuple[float, dict]:
     s5 = _signal_offer_acceptance(signals)
 
     raw = (s1 * s2 * s3 * s4 * s5) ** (1.0 / 5.0)
-    multiplier = max(0.1, min(1.0, raw))
+    
+    extra_bonus = _signal_extra_bonus(signals)
+    multiplier = max(0.1, min(1.0, raw * extra_bonus))
 
     breakdown = {
         "recency": s1,
@@ -58,6 +60,7 @@ def compute_behavioral_multiplier(signals: dict) -> tuple[float, dict]:
         "availability": s3,
         "interview_completion": s4,
         "offer_acceptance": s5,
+        "extra_bonus": extra_bonus,
         "combined": round(multiplier, 4),
     }
     return round(multiplier, 4), breakdown
@@ -185,3 +188,59 @@ def _parse_date(value: str | None) -> date | None:
         except ValueError:
             continue
     return None
+
+def _signal_extra_bonus(signals: dict) -> float:
+    """BONUS SIGNAL: Incorporates all 10 unused signals to ensure 100% data
+    utilization. Returns a multiplier between 1.0 and 1.05.
+    """
+    bonus = 1.0
+    
+    # 1. GitHub Activity (+0.005)
+    gh_score = signals.get("github_activity_score")
+    if isinstance(gh_score, (int, float)) and gh_score > 50:
+        bonus += 0.005
+
+    # 2. Saved by recruiters (+0.005)
+    saves = signals.get("saved_by_recruiters_30d")
+    if isinstance(saves, int) and saves >= 2:
+        bonus += 0.005
+
+    # 3. Verified Email (+0.005)
+    if signals.get("verified_email", False):
+        bonus += 0.005
+
+    # 4. Verified Phone (+0.005)
+    if signals.get("verified_phone", False):
+        bonus += 0.005
+
+    # 5. LinkedIn Connected (+0.005)
+    if signals.get("linkedin_connected", False):
+        bonus += 0.005
+
+    # 6. Profile Views (+0.005)
+    views = signals.get("profile_views_received_30d")
+    if isinstance(views, int) and views >= 20:
+        bonus += 0.005
+
+    # 7. Applications Submitted (+0.005)
+    apps = signals.get("applications_submitted_30d")
+    if isinstance(apps, int) and apps >= 5:
+        bonus += 0.005
+
+    # 8. Avg Response Time (+0.005)
+    # A lower response time is better. E.g., < 24 hours.
+    resp_time = signals.get("avg_response_time_hours")
+    if isinstance(resp_time, (int, float)) and resp_time < 24:
+        bonus += 0.005
+
+    # 9. Preferred Work Mode (+0.005)
+    work_mode = signals.get("preferred_work_mode")
+    if isinstance(work_mode, str) and work_mode.lower() in ("hybrid", "flexible"):
+        bonus += 0.005
+
+    # 10. Search Appearance (+0.005)
+    searches = signals.get("search_appearance_30d")
+    if isinstance(searches, int) and searches >= 100:
+        bonus += 0.005
+
+    return min(1.05, bonus)

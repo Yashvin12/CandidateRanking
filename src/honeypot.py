@@ -57,25 +57,40 @@ def check_honeypot(candidate: dict) -> tuple[bool, str | None]:
     "Salary range inverted: min 16.0 > max 7.3"
     """
 
+    reasons: list[str] = []
+
     # ── CHECK 1: Salary range inversion ──────────────────────────────────
-    # result = _check_salary_inversion(candidate)
-    # if result is not None:
-    #     return True, result
+    result = _check_salary_inversion(candidate)
+    if result is not None:
+        reasons.append(result)
 
     # ── CHECK 2: Temporal paradox ────────────────────────────────────────
-    # result = _check_temporal_paradox(candidate)
-    # if result is not None:
-    #     return True, result
+    result = _check_temporal_paradox(candidate)
+    if result is not None:
+        reasons.append(result)
 
     # ── CHECK 3: Experience duration paradox ─────────────────────────────
     # DISABLED: Too many false positives (~25K) from concurrent/overlapping
-    # roles (e.g., full-time + freelance simultaneously).  Sum of
-    # duration_months is not a reliable signal even at a 3× ratio threshold.
-    # result = _check_experience_paradox(candidate)
-    # if result is not None:
-    #     return True, result
+    # roles.  Not a reliable signal even at a 3x ratio threshold.
 
-    return False, None
+    # ── DECISION: Report-only, no hard flags ─────────────────────────────
+    # After thorough data analysis:
+    # - Individual signals are too noisy (~19K salary inversions, ~7.5K
+    #   temporal paradoxes in the 100K dataset).
+    # - Even dual-signal catches 1,466 — still 18x more than the ~80
+    #   real honeypots the spec mentions.
+    # - The structured scoring system (skill, career, alignment,
+    #   behavioral, contradiction checks 1-7) already naturally avoids
+    #   honeypots — 0 flagged candidates made it into the top 100 even
+    #   without any explicit penalty.
+    # - Hard-flagging risks zeroing out legitimately good candidates who
+    #   happen to have noisy salary/date data.
+    #
+    # Per the spec: "We expect a good ranking system to naturally avoid
+    # them; you don't need to special-case them."
+    #
+    # We report reasons for logging/awareness but never hard-flag.
+    return False, "; ".join(reasons) if reasons else None
 
 
 # ═══════════════════════════════════════════════════════════════════════════

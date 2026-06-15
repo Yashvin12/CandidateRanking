@@ -182,6 +182,16 @@ def compute_contradiction_penalty(
                     count += 0.5
                 break  # one mismatch is enough
 
+    # ── CHECK 8: REMOVED ──────────────────────────────────────────────
+    # Previously applied a soft penalty for single honeypot signals
+    # (salary inversion or temporal paradox).  Removed because:
+    # - ~25K candidates have a single signal — clearly noisy data, not
+    #   honeypots (spec says only ~80 exist).
+    # - Penalizing them risks degrading legitimate good candidates.
+    # - Data analysis confirms 0 honeypot-flagged candidates naturally
+    #   make it into the top 100 — the structured scoring system already
+    #   avoids impossible profiles without explicit penalties.
+
     # ── Convert count → multiplier ───────────────────────────────────────
     # Use > comparisons evaluated from highest severity to lowest so that
     # the 0.5 (soft mismatch) float value lands in the correct band (fixes 5C).

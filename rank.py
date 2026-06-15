@@ -1,5 +1,5 @@
 """
-rank.py — Main ranking pipeline entry point.
+rank.py -- Main ranking pipeline entry point.
 =============================================
 Wires all scoring modules together, processes the full candidate dataset,
 and outputs a ranked CSV of the top 100 candidates.
@@ -128,9 +128,9 @@ def load_llm_features(path: str) -> dict[str, dict]:
 def run_pipeline(args: argparse.Namespace) -> None:
     t_start = time.perf_counter()
 
-    # ═══════════════════════════════════════════════════════════════════
+    # ===================================================================
     # STEP 1: Load data
-    # ═══════════════════════════════════════════════════════════════════
+    # ===================================================================
     candidates = load_candidates(args.candidates)
     company_map = load_company_classifications(args.company_map)
     llm_features = load_llm_features(args.llm_features)
@@ -141,16 +141,16 @@ def run_pipeline(args: argparse.Namespace) -> None:
 
     print(f"Loaded {len(candidates)} candidates, {len(company_map)} company classifications")
 
-    # ═══════════════════════════════════════════════════════════════════
+    # ===================================================================
     # STEP 2: Flag honeypots
-    # ═══════════════════════════════════════════════════════════════════
+    # ===================================================================
     honeypot_flags = flag_honeypots(candidates)
     hp_count = sum(1 for v in honeypot_flags.values() if v[0])
     print(f"Flagged {hp_count} honeypots")
 
-    # ═══════════════════════════════════════════════════════════════════
+    # ===================================================================
     # STEP 3: Stage 1 Structured Scoring
-    # ═══════════════════════════════════════════════════════════════════
+    # ===================================================================
     t_stage1_start = time.perf_counter()
     stage1_results: list[dict] = []
 
@@ -191,7 +191,7 @@ def run_pipeline(args: argparse.Namespace) -> None:
             "contra_mult": contra_mult,
             "behav_mult": behav_mult,
             "is_honeypot": is_honeypot,
-            # Do NOT store the full candidate dict for all 100K records — that
+            # Do NOT store the full candidate dict for all 100K records -- that
             # would use ~700 MB of RAM (fix 8B).  Store only the id; the full
             # dict is fetched from candidate_index for the top-1000 pool only.
             "skill_breakdown": skill_bd,
@@ -204,12 +204,12 @@ def run_pipeline(args: argparse.Namespace) -> None:
     t_stage1_elapsed = time.perf_counter() - t_stage1_start
     print(f"Stage 1 completed in {t_stage1_elapsed:.1f}s")
 
-    # ═══════════════════════════════════════════════════════════════════
+    # ===================================================================
     # STEP 4: Get Top 1000 using heapq.nlargest (O(n log k) vs O(n log n) sort)
-    # ═══════════════════════════════════════════════════════════════════
-    # Max embedding swing is 15 points — not enough for rank 1000 to
+    # ===================================================================
+    # Max embedding swing is 15 points -- not enough for rank 1000 to
     # jump past rank 100 by structured score.  Keeping 1000 instead of
-    # 5000 cuts embedding time by 5×.
+    # 5000 cuts embedding time by 5x.
     # heapq.nlargest is significantly faster than sort + slice for large n (fix 8A).
     top_pool = heapq.nlargest(
         1000,
@@ -219,16 +219,16 @@ def run_pipeline(args: argparse.Namespace) -> None:
     # Restore ascending id tie-break (heapq returns highest key first).
     top_pool.sort(key=lambda r: (-r["stage1_score"], r["candidate_id"]))
 
-    # ── Write top-1000 IDs for the offline LLM extractor ─────────────────
+    # -- Write top-1000 IDs for the offline LLM extractor -----------------
     top_ids_path = Path(args.top_ids_output)
     top_ids_path.parent.mkdir(parents=True, exist_ok=True)
     with top_ids_path.open("w", encoding="utf-8") as f:
         for r in top_pool:
             f.write(r["candidate_id"] + "\n")
-    print(f"Saved {len(top_pool)} top candidate IDs → {top_ids_path}")
-    print(f"  → Run LLM extractor next:  python -m src.llm_extractor --candidates <your_file> --top-ids {top_ids_path}")
+    print(f"Saved {len(top_pool)} top candidate IDs -> {top_ids_path}")
+    print(f"  -> Run LLM extractor next:  python -m src.llm_extractor --candidates <your_file> --top-ids {top_ids_path}")
 
-    # Build a fast id → candidate dict lookup from the original list (fix 8B).
+    # Build a fast id -> candidate dict lookup from the original list (fix 8B).
     # Only materialise full dicts for the top 1000, not all 100K.
     candidate_index: dict[str, dict] = {
         c["candidate_id"]: c for c in candidates
@@ -237,9 +237,9 @@ def run_pipeline(args: argparse.Namespace) -> None:
     for r in top_pool:
         r["candidate"] = candidate_index.get(r["candidate_id"], {})
 
-    # ═══════════════════════════════════════════════════════════════════
+    # ===================================================================
     # STEP 5: Stage 2 Embedding Scoring on Top 1000
-    # ═══════════════════════════════════════════════════════════════════
+    # ===================================================================
     t_emb_start = time.perf_counter()
     top_pool_candidates = [r["candidate"] for r in top_pool]
     print(f"Computing embeddings for top {len(top_pool_candidates)} candidates...")
@@ -249,9 +249,9 @@ def run_pipeline(args: argparse.Namespace) -> None:
     t_emb_elapsed = time.perf_counter() - t_emb_start
     print(f"Embedding stage completed in {t_emb_elapsed:.1f}s")
 
-    # ═══════════════════════════════════════════════════════════════════
+    # ===================================================================
     # STEP 6: Final Scoring & Re-rank
-    # ═══════════════════════════════════════════════════════════════════
+    # ===================================================================
     results = []
     for i, r in enumerate(top_pool):
         emb_score = embedding_scores[i]
@@ -269,9 +269,9 @@ def run_pipeline(args: argparse.Namespace) -> None:
     results.sort(key=lambda r: (-r["final_score"], r["candidate_id"]))
     top_100 = results[:100]
 
-    # ═══════════════════════════════════════════════════════════════════
+    # ===================================================================
     # STEP 7: Verification
-    # ═══════════════════════════════════════════════════════════════════
+    # ===================================================================
     hp_in_top = sum(1 for r in top_100 if r["is_honeypot"])
     print(f"\nHoneypots in top 100: {hp_in_top}")
 
@@ -290,9 +290,9 @@ def run_pipeline(args: argparse.Namespace) -> None:
                 f"{title} @ {company}"
             )
 
-    # ═══════════════════════════════════════════════════════════════════
+    # ===================================================================
     # STEP 8: Generate reasoning for top 100
-    # ═══════════════════════════════════════════════════════════════════
+    # ===================================================================
     for r in top_100:
         subscores = {
             "skill_score": r["skill_score"],
@@ -303,9 +303,9 @@ def run_pipeline(args: argparse.Namespace) -> None:
         }
         r["reasoning"] = generate_reasoning(r["candidate"], subscores)
 
-    # ═══════════════════════════════════════════════════════════════════
+    # ===================================================================
     # STEP 9: Write CSV
-    # ═══════════════════════════════════════════════════════════════════
+    # ===================================================================
     output_path = Path(args.output)
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -326,9 +326,9 @@ def run_pipeline(args: argparse.Namespace) -> None:
                 r["reasoning"],
             ])
 
-    # ═══════════════════════════════════════════════════════════════════
+    # ===================================================================
     # STEP 10: Done
-    # ═══════════════════════════════════════════════════════════════════
+    # ===================================================================
     elapsed = time.perf_counter() - t_start
     print(f"\nWritten {output_path} with {len(top_100)} candidates")
     print(f"Total time: {elapsed:.1f}s")
