@@ -111,27 +111,27 @@ def _signal_response_rate(signals: dict) -> float:
 
 def _signal_availability(signals: dict) -> float:
     """SIGNAL 3: Open-to-work flag + notice period composite."""
-    open_to_work = signals.get("open_to_work_flag")
-    if open_to_work is None:
-        open_to_work = False
-
-    if open_to_work:
-        return 1.0
-
     notice = signals.get("notice_period_days")
-    if notice is None:
-        return 0.3  # worst case
-
     try:
-        notice = int(notice)
+        notice = int(notice) if notice is not None else 180
     except (ValueError, TypeError):
-        return 0.3
+        notice = 180
 
-    if notice <= 60:
-        return 0.8
-    if notice <= 90:
-        return 0.6
-    return 0.3
+    open_to_work = signals.get("open_to_work_flag", False)
+
+    # 120-day notice is practically unhireable for a startup.
+    # Heavily penalize notice > 90, even if they claim to be open_to_work.
+    if notice > 90:
+        return 0.2 if open_to_work else 0.1
+
+    if notice <= 30:
+        base = 0.9
+    elif notice <= 60:
+        base = 0.7
+    else:
+        base = 0.5
+
+    return min(1.0, base + 0.2) if open_to_work else base
 
 
 def _signal_interview_completion(signals: dict) -> float:
