@@ -178,9 +178,9 @@ def _dimension_notice(candidate: dict) -> float:
         return 3.0
     if notice <= 60:
         return 2.5
-    if notice <= 90:
+    if notice < 90:          # tightened: exactly 90d now falls into the lower bracket
         return 2.0 if open_to_work else 1.5
-    # notice > 90
+    # notice >= 90 — consistent with behavioral.py >=90 heavy penalty
     return 1.0 if open_to_work else 0.5
 
 
@@ -195,7 +195,13 @@ def _domain_fit_penalty(skill_breakdown: dict) -> float:
     if wrong <= 0:
         return 0.0
     if core == 0:
+        # No NLP/IR skills at all — pure wrong-domain candidate
         return -6.0
-    if wrong > core * 3:
+    if wrong > core * 2:
+        # More than 2:1 wrong-to-core ratio → significant domain mismatch
+        # Tightened from *3 to *2: catches mixed profiles like speech+NLP earlier
         return -3.0
+    if wrong >= 2 and wrong >= core:
+        # Roughly equal or more wrong-domain than core — gentle signal
+        return -1.5
     return 0.0

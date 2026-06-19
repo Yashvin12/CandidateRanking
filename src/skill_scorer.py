@@ -47,6 +47,25 @@ _ALL_MUST_HAVE_LOWER: set[str] = set()
 for _kws in _MUST_HAVE_LOWER.values():
     _ALL_MUST_HAVE_LOWER.update(_kws)
 
+# ── Career description fallback patterns (Step 4 — plain-language rescue) ──
+# These keywords are checked against combined career descriptions when a
+# must-have skill group scores 0 from the skill list alone.  This rescues
+# Tier 5 candidates who describe systems in plain English without using
+# exact product names like "Pinecone" or "FAISS".
+_VECTOR_DB_FALLBACK: list[str] = [
+    "vector database", "vector store", "vector search",
+    "semantic search", "approximate nearest neighbor", "ann index",
+    "embedding index", "faiss", "pinecone", "weaviate", "milvus",
+    "opensearch", "elasticsearch", "qdrant", "pgvector", "chroma",
+]
+
+_PRODUCTION_RETRIEVAL_FALLBACK: list[str] = [
+    "recommendation system", "search system", "retrieval system",
+    "ranking system", "information retrieval", "hybrid search",
+    "dense retrieval", "sparse retrieval", "bm25", "rag",
+    "retrieval augmented", "reranking", "re-ranking",
+]
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # Public API
@@ -88,17 +107,27 @@ def compute_skill_score(candidate: dict) -> tuple[float, dict]:
     for group_name, keywords in _MUST_HAVE_LOWER.items():
         group_scores[group_name] = _score_group(normed, keywords)
 
-    # ── STEP 1b: Python description fallback (fix 2B) ───────────────────
-    # "Python" may appear in career descriptions without being listed as a
-    # standalone skill (e.g. listed as "Python 3" or embedded in a tech stack).
-    # If the python skill group scored 0, scan career descriptions as a fallback.
+    # ── STEP 1b: Career description fallback for skill groups ─────────────
+    # A Tier 5 candidate may describe building systems without using exact
+    # skill keywords.  If a must-have group scored 0, scan career descriptions
+    # as a fallback.  (Python fallback existed already; this extends to
+    # vector_db and production_retrieval per the JD's plain-language trap.)
+    career_history = candidate.get("career_history") or []
+    desc_combined = " ".join(
+        (r.get("description") or "") for r in career_history
+    ).lower()
+
     if group_scores.get("python", 0.0) == 0.0:
-        career_history = candidate.get("career_history") or []
-        desc_combined = " ".join(
-            (r.get("description") or "") for r in career_history
-        ).lower()
         if "python" in desc_combined:
             group_scores["python"] = 7.0  # base score (no duration/endorsement bonuses)
+
+    if group_scores.get("vector_db", 0.0) == 0.0:
+        if any(kw in desc_combined for kw in _VECTOR_DB_FALLBACK):
+            group_scores["vector_db"] = 7.5  # boosted: rewards Tier 5 plain-language builders
+
+    if group_scores.get("production_retrieval", 0.0) == 0.0:
+        if any(kw in desc_combined for kw in _PRODUCTION_RETRIEVAL_FALLBACK):
+            group_scores["production_retrieval"] = 7.5  # boosted: rewards Tier 5 plain-language builders
 
     step1_total = sum(group_scores.values())
 
@@ -109,7 +138,7 @@ def compute_skill_score(candidate: dict) -> tuple[float, dict]:
     running = min(step1_total + nth_bonus, 40.0)
 
     # ── STEP 3: Credibility penalty ─────────────────────────────────────
-    cred_penalty = _credibility_penalty(normed)
+    cred_penalty = _credibility_penalty(normed, desc_combined)
     running = max(0.0, running + cred_penalty)
 
     # ── STEP 4: Assessment score bonus (max +5, total capped at 40) ──────
@@ -207,16 +236,31 @@ def _count_must_have_hits(normed_skills: list[tuple[str, dict]]) -> int:
     return count
 
 
-def _credibility_penalty(normed_skills: list[tuple[str, dict]]) -> float:
-    """Penalise candidates who claim expert/advanced with <6 months duration."""
+def _credibility_penalty(
+    normed_skills: list[tuple[str, dict]],
+    desc_combined: str = "",
+) -> float:
+    """Penalise candidates who claim expert/advanced with <6 months duration.
+
+    Part B of Step 4: if keyword stuffing is detected AND career descriptions
+    don't mention the stuffed skills, apply a stronger penalty (-15 instead
+    of -10).  This separates genuine experts from keyword stuffers.
+    """
     suspect_count = 0
-    for _, skill_dict in normed_skills:
+    suspect_names: list[str] = []
+    for skill_lower, skill_dict in normed_skills:
         prof = (skill_dict.get("proficiency") or "").lower()
         dur = skill_dict.get("duration_months") or 0
         if prof in ("expert", "advanced") and dur < 6:
             suspect_count += 1
+            suspect_names.append(skill_lower)
 
     if suspect_count >= 5:
+        # Check if career descriptions corroborate the stuffed skills.
+        # If none of the suspect skill names appear in descriptions,
+        # this is a pure keyword stuffer → harsher penalty.
+        if desc_combined and not any(sn in desc_combined for sn in suspect_names):
+            return -15.0
         return -10.0
     if suspect_count >= 3:
         return -5.0

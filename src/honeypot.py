@@ -11,11 +11,11 @@ multiple dimensions simultaneously**.
 
 Architecture
 ~~~~~~~~~~~~
-Each candidate accumulates "strike points" from 11 independent checks
-grouped by severity:
+Each candidate accumulates "strike points" from 13 independent checks
+grouped by severity (13 checks total):
 
-    Heavy  strikes (H1–H4):  2.0 points each
-    Medium strikes (M1–M3):  1.5 points each
+    Heavy  strikes (H1–H6):  2.0 points each
+    Medium strikes (M1–M4):  1.5 points each
     Light  strikes (L1–L4):  1.0 points each
 
 A candidate is flagged as a honeypot ONLY when total strike points
@@ -91,6 +91,17 @@ _M1_MAX_DURATION_MONTHS: int = 3
 #         is common noise in synthetic data (~24K candidates).  Requiring ≥2
 #         pairs is much more selective.  Increase to 3 if still too noisy.
 _M3_MIN_DUPLICATE_PAIRS: int = 2
+
+# TUNING: H5 max-possible-experience overshoot thresholds.
+#         Diagnostic on 100K dataset (scratch_h5_diagnostic.py):
+#           >1.5yr: 25 candidates (8-12yr overshoot — blatant fakes)
+#           1.0-1.5yr: 0 candidates (empty bucket)
+#           0.5-1.0yr: 13 candidates (~0.51yr — date arithmetic noise)
+#           0.3-0.5yr: 4538 candidates (systematic rounding noise — DO NOT FLAG)
+#         CRITICAL lowered 1.5→1.0 as safety-net (empty bucket, no impact today).
+#         HEAVY stays at 0.5yr — lowering to 0.3 would cause ~4500 false positives.
+_H5_CRITICAL_OVERSHOOT: float = 1.0   # CRITICAL override (4.0 pts) — was 1.5
+_H5_HEAVY_OVERSHOOT: float = 0.5      # HEAVY strike (2.0 pts) — unchanged
 
 _L1_MAX_COMPLETENESS: float = 30.0
 _L1_MIN_EXPERT_SKILLS: int = 3
@@ -303,16 +314,90 @@ def _check_h5_max_possible_experience(candidate: dict) -> _Strike | None:
         return None
 
     overshoot = claimed - max_possible
-    if overshoot > 5.0:   # 5+ year fabrication
+    if overshoot > _H5_CRITICAL_OVERSHOOT:
         return _Strike(
             "H5", 4.0,  # CRITICAL override
             f"Impossible max experience: claims {claimed}yr but started {earliest} "
             f"(max {max_possible:.1f}yr possible in 2026). Fabricated {overshoot:.1f}yr",
         )
-    elif overshoot > 2.0:
+    elif overshoot > _H5_HEAVY_OVERSHOOT:
         return _Strike(
             "H5", _HEAVY,
             f"Experience overshoot: claims {claimed}yr, max possible {max_possible:.1f}yr",
+        )
+    return None
+
+
+# ── Tech birth-year table (approximate public availability) ───────────────
+# Format: { skill_keyword_lower: first_possible_year }
+# Only include technologies with a clear, verifiable public release date.
+_TECH_BIRTH_YEARS: dict[str, int] = {
+    "lora":                  2021,  # LoRA paper: Nov 2021
+    "qlora":                 2023,  # QLoRA paper: May 2023
+    "peft":                  2022,  # HF PEFT library: Feb 2022
+    "langchain":             2022,  # Harrison Chase, Oct 2022
+    "llama":                 2023,  # Meta LLaMA: Feb 2023
+    "chatgpt":               2022,  # OpenAI: Nov 2022
+    "gpt-4":                 2023,  # OpenAI: Mar 2023
+    "pinecone":              2021,  # Public API: Jan 2021
+    "qdrant":                2021,  # Qdrant 1.0: 2021
+    "weaviate":              2019,  # Weaviate 1.0: 2019
+    "pgvector":              2021,  # pgvector: Apr 2021
+    "chroma":                2022,  # Chroma DB: 2022
+    "milvus":                2019,  # Milvus 1.0: Oct 2019
+    "sentence-transformers": 2019,  # SBERT paper: Aug 2019
+    "faiss":                 2017,  # FAISS (Facebook): 2017
+    "transformers":          2018,  # HF Transformers: Oct 2018
+}
+REFERENCE_YEAR: int = 2026
+
+
+def _check_h6_tech_existence(candidate: dict) -> _Strike | None:
+    """H6 — Tech existence paradox.
+
+    Fires when a candidate claims expert/advanced proficiency in a technology
+    with duration_months that implies they started using it BEFORE the
+    technology publicly existed.
+
+    Example: LoRA released 2021. In 2026, max possible = 5 years = 60 months.
+    Claiming expert LoRA with duration_months = 96 is impossible.
+    """
+    skills = candidate.get("skills") or []
+    violations = []
+
+    for skill in skills:
+        prof = (skill.get("proficiency") or "").lower()
+        if prof not in ("expert", "advanced"):
+            continue
+        duration = skill.get("duration_months")
+        if duration is None:
+            continue
+        name_lower = (skill.get("name") or "").lower()
+
+        for tech_kw, birth_year in _TECH_BIRTH_YEARS.items():
+            if tech_kw in name_lower:
+                max_possible_months = (REFERENCE_YEAR - birth_year) * 12
+                try:
+                    if int(duration) > max_possible_months + 6:  # 6mo grace
+                        violations.append(
+                            f"{skill.get('name')}({prof}): "
+                            f"{duration}mo claimed vs {max_possible_months}mo max "
+                            f"(tech released {birth_year})"
+                        )
+                except (ValueError, TypeError):
+                    pass
+                break  # matched this skill, move to next
+
+    if len(violations) >= 2:
+        return _Strike(
+            "H6", _HEAVY,
+            f"Tech existence paradox ({len(violations)} skills predate technology: "
+            f"{violations[0]})",
+        )
+    elif len(violations) == 1:
+        return _Strike(
+            "H6", _MEDIUM,
+            f"Tech existence paradox: {violations[0]}",
         )
     return None
 
@@ -415,6 +500,61 @@ def _check_m3_recycled_desc(candidate: dict) -> _Strike | None:
     return None
 
 
+def _check_m4_skill_career_span(candidate: dict) -> _Strike | None:
+    """M4 — Skill duration exceeds career span.
+
+    Fires when 2+ expert/advanced skills claim duration_months that exceeds
+    the candidate's actual career span (from earliest job start to today).
+
+    This is distinct from M1 (which catches <3mo claims). M4 catches the
+    opposite: impossibly LONG skill durations relative to career length.
+    """
+    career = candidate.get("career_history") or []
+    skills = candidate.get("skills") or []
+    if not career or not skills:
+        return None
+
+    start_dates = [_parse_date(r.get("start_date")) for r in career]
+    start_dates = [d for d in start_dates if d]
+    if not start_dates:
+        return None
+
+    earliest = min(start_dates)
+    career_months = (REFERENCE_DATE - earliest).days / 30.44
+
+    violations = []
+    for s in skills:
+        prof = (s.get("proficiency") or "").lower()
+        if prof not in ("expert", "advanced"):
+            continue
+        dur = s.get("duration_months") or 0
+        name = s.get("name", "?")
+        try:
+            dur = int(dur)
+        except (ValueError, TypeError):
+            continue
+        # Allow 12-month grace (could have used it before current job history)
+        if dur > (career_months + 12):
+            excess = dur - career_months
+            violations.append(
+                f"{name}({prof}): {dur}mo vs {career_months:.0f}mo career "
+                f"(+{excess:.0f}mo)"
+            )
+
+    if len(violations) >= 4:
+        return _Strike(
+            "M4", _HEAVY,
+            f"Skill duration massively exceeds career: {violations[0]}, ...",
+        )
+    elif len(violations) >= 2:
+        return _Strike(
+            "M4", _MEDIUM,
+            f"Skill duration exceeds career span ({len(violations)} skills): "
+            f"{violations[0]}",
+        )
+    return None
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 # Light strikes (1.0 points each)
 # ═══════════════════════════════════════════════════════════════════════════
@@ -511,9 +651,11 @@ _ALL_CHECKS: list[tuple[callable, str]] = [
     (_check_h3_chronological,   "H3"),
     (_check_h4_endorsements,    "H4"),
     (_check_h5_max_possible_experience, "H5"),
+    (_check_h6_tech_existence,  "H6"),
     (_check_m1_fabrication,     "M1"),
     (_check_m2_assessment,      "M2"),
     (_check_m3_recycled_desc,   "M3"),
+    (_check_m4_skill_career_span, "M4"),
     (_check_l1_empty_shell,     "L1"),
     (_check_l2_salary,          "L2"),
     (_check_l3_temporal,        "L3"),

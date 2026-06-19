@@ -1,7 +1,7 @@
 """
 src/career_scorer.py
 ====================
-Scores the career quality of a candidate (0–30) across four dimensions:
+Scores the career quality of a candidate (0–30) across five dimensions:
 
 A. **Company quality** (0–12) — product > research > unknown > consulting/non_tech.
 B. **Title relevance** (0–10) — ML/AI titles score highest; non-tech titles score 0.
@@ -11,6 +11,9 @@ D. **Description analysis** (adjustments: +3 to −8) — production evidence
 E. **LLM features** (optional, adjustments: −15 to +12) — signals extracted
    offline by ``src/llm_extractor.py`` and passed in as a pre-loaded dict.
    If the dict is absent the function falls back to heuristic-only scoring.
+F. **Title-chaser penalty** (0 to −8) — candidates who switch companies every
+   <18 months 3+ times are explicitly disqualified by the JD. Applied as a
+   hard deduction so they cannot reach top-100 purely on skill/embedding score.
 
 Usage
 -----
@@ -128,10 +131,16 @@ def compute_career_score(
         heuristic_prod_bonus        = prod_bonus,
     )
 
+    # ── F: Title-chaser penalty (0 to −8) ────────────────────────────────
+    # JD explicitly disqualifies candidates who switch companies every 1.5yr.
+    # 3+ short stints (<18mo) = hard disqualifier penalty.
+    # 2 short stints = warning-level penalty.
+    title_chaser_penalty, short_stint_count = _dimension_title_chaser(career_history)
+
     raw = (
         company_score + title_score + exp_score
         + prod_bonus + nontech_penalty + mismatch_penalty
-        + llm_adj
+        + llm_adj + title_chaser_penalty
     )
     total = max(0.0, min(30.0, raw))
 
@@ -146,6 +155,8 @@ def compute_career_score(
         "title_description_mismatch": title_desc_mismatch,
         "llm_adjustment": llm_adj,
         "llm_breakdown": llm_bd,
+        "title_chaser_penalty": title_chaser_penalty,
+        "short_stint_count": short_stint_count,
         "total": round(total, 2),
     }
     return round(total, 2), breakdown
@@ -259,6 +270,48 @@ def _dimension_experience(years: float | int | None) -> float:
         return 3.0
     # y < 3
     return 2.0
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Dimension F — Title-chaser penalty
+# ═══════════════════════════════════════════════════════════════════════════
+
+# JD states: candidates who switch every 1.5 years = not a fit, 3+ year
+# commitment expected. 18 months (1.5yr) is the per-role threshold.
+_TITLE_CHASER_THRESHOLD_MONTHS: int = 18
+_TITLE_CHASER_HARD_PENALTY: float = -8.0   # 3+ short stints → disqualifier
+_TITLE_CHASER_WARN_PENALTY: float = -3.0   # 2 short stints → warning
+_TITLE_CHASER_MIN_HARD: int = 3             # stints below threshold to trigger hard
+_TITLE_CHASER_MIN_WARN: int = 2             # stints below threshold to trigger warn
+
+
+def _dimension_title_chaser(
+    career_history: list[dict],
+) -> tuple[float, int]:
+    """Penalise title-chasers — candidates with many short stints < 18 months.
+
+    Returns
+    -------
+    tuple[float, int]
+        ``(penalty, short_stint_count)`` — penalty is 0.0, -3.0 or -8.0.
+    """
+    if not career_history:
+        return 0.0, 0
+
+    short_count = 0
+    for role in career_history:
+        dur = role.get("duration_months")
+        try:
+            if int(dur) < _TITLE_CHASER_THRESHOLD_MONTHS:
+                short_count += 1
+        except (TypeError, ValueError):
+            continue
+
+    if short_count >= _TITLE_CHASER_MIN_HARD:
+        return _TITLE_CHASER_HARD_PENALTY, short_count
+    if short_count >= _TITLE_CHASER_MIN_WARN:
+        return _TITLE_CHASER_WARN_PENALTY, short_count
+    return 0.0, short_count
 
 
 # ═══════════════════════════════════════════════════════════════════════════

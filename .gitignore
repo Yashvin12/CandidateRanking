@@ -141,6 +141,8 @@ docs/
 
 # Scratch / temp files
 scratch_*.py
+audit_submission.py
+submission_test.csv
 submission_spec.txt
 sample_submission.csv
 .env

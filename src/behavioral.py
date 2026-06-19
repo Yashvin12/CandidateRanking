@@ -1,7 +1,7 @@
 """
 src/behavioral.py
 =================
-Computes a **multiplicative** behavioral modifier (0.1–1.0) based on
+Computes a **multiplicative** behavioral modifier (0.1–1.15) based on
 platform engagement signals.  A value of 0.2 means an otherwise perfect
 90-point candidate drops to 18 — this is intentional per the JD's
 explicit instruction to down-weight unavailable candidates.
@@ -41,7 +41,7 @@ def compute_behavioral_multiplier(signals: dict) -> tuple[float, dict]:
     Returns
     -------
     tuple[float, dict]
-        ``(multiplier, breakdown)`` where multiplier ∈ [0.1, 1.0].
+        ``(multiplier, breakdown)`` where multiplier ∈ [0.1, 1.15].
     """
     s1 = _signal_recency(signals)
     s2 = _signal_response_rate(signals)
@@ -52,7 +52,7 @@ def compute_behavioral_multiplier(signals: dict) -> tuple[float, dict]:
     raw = (s1 * s2 * s3 * s4 * s5) ** (1.0 / 5.0)
     
     extra_bonus = _signal_extra_bonus(signals)
-    multiplier = max(0.1, min(1.0, raw * extra_bonus))
+    multiplier = max(0.1, min(1.15, raw * extra_bonus))
 
     breakdown = {
         "recency": s1,
@@ -119,9 +119,9 @@ def _signal_availability(signals: dict) -> float:
 
     open_to_work = signals.get("open_to_work_flag", False)
 
-    # 120-day notice is practically unhireable for a startup.
-    # Heavily penalize notice > 90, even if they claim to be open_to_work.
-    if notice > 90:
+    # 90-day notice is the JD's outer limit ("30+ day notice, bar gets higher").
+    # Treat >=90 days as functionally hard to hire on short timeline.
+    if notice >= 90:
         return 0.2 if open_to_work else 0.1
 
     if notice <= 30:
@@ -190,57 +190,75 @@ def _parse_date(value: str | None) -> date | None:
     return None
 
 def _signal_extra_bonus(signals: dict) -> float:
-    """BONUS SIGNAL: Incorporates all 10 unused signals to ensure 100% data
-    utilization. Returns a multiplier between 1.0 and 1.05.
+    """Upgraded bonus: range now 1.0–1.15 to meaningfully separate twins.
+
+    High-weight signals (GitHub, recruiter saves, applications, response time)
+    use tiered bonuses to create real differentiation between otherwise-identical
+    candidates.  Low-weight identity/verification signals stay small.
+
+    A dead-lead gate prevents bonus accumulation for candidates with very long
+    notice periods who aren't open to work.
     """
     bonus = 1.0
-    
-    # 1. GitHub Activity (+0.005)
-    gh_score = signals.get("github_activity_score")
-    if isinstance(gh_score, (int, float)) and gh_score > 50:
+
+    # ── HIGH WEIGHT signals (separators between otherwise-identical candidates)
+
+    # GitHub activity: strong real-world evidence of coding
+    gh = signals.get("github_activity_score", -1)
+    if isinstance(gh, (int, float)) and gh > 70:
+        bonus += 0.04
+    elif isinstance(gh, (int, float)) and gh > 40:
+        bonus += 0.02
+
+    # Market demand: other recruiters saving this profile
+    saves = signals.get("saved_by_recruiters_30d", 0)
+    if isinstance(saves, int) and saves >= 5:
+        bonus += 0.03
+    elif isinstance(saves, int) and saves >= 2:
+        bonus += 0.015
+
+    # Active job seeker: submitted applications recently
+    apps = signals.get("applications_submitted_30d", 0)
+    if isinstance(apps, int) and apps >= 5:
+        bonus += 0.02
+
+    # Response speed: fast responders are easier to hire
+    resp_time = signals.get("avg_response_time_hours")
+    if isinstance(resp_time, (int, float)) and resp_time < 12:
+        bonus += 0.02
+    elif isinstance(resp_time, (int, float)) and resp_time < 24:
         bonus += 0.005
 
-    # 2. Saved by recruiters (+0.005)
-    saves = signals.get("saved_by_recruiters_30d")
-    if isinstance(saves, int) and saves >= 2:
-        bonus += 0.005
-
-    # 3. Verified Email (+0.005)
-    if signals.get("verified_email", False):
-        bonus += 0.005
-
-    # 4. Verified Phone (+0.005)
-    if signals.get("verified_phone", False):
-        bonus += 0.005
-
-    # 5. LinkedIn Connected (+0.005)
-    if signals.get("linkedin_connected", False):
-        bonus += 0.005
-
-    # 6. Profile Views (+0.005)
+    # Profile views: passive market signal
     views = signals.get("profile_views_received_30d")
     if isinstance(views, int) and views >= 20:
-        bonus += 0.005
+        bonus += 0.01
 
-    # 7. Applications Submitted (+0.005)
-    apps = signals.get("applications_submitted_30d")
-    if isinstance(apps, int) and apps >= 5:
-        bonus += 0.005
+    # Search appearances: recruiter demand signal
+    searches = signals.get("search_appearance_30d")
+    if isinstance(searches, int) and searches >= 100:
+        bonus += 0.01
 
-    # 8. Avg Response Time (+0.005)
-    # A lower response time is better. E.g., < 24 hours.
-    resp_time = signals.get("avg_response_time_hours")
-    if isinstance(resp_time, (int, float)) and resp_time < 24:
-        bonus += 0.005
-
-    # 9. Preferred Work Mode (+0.005)
+    # Preferred work mode: flexibility signal
     work_mode = signals.get("preferred_work_mode")
     if isinstance(work_mode, str) and work_mode.lower() in ("hybrid", "flexible"):
         bonus += 0.005
 
-    # 10. Search Appearance (+0.005)
-    searches = signals.get("search_appearance_30d")
-    if isinstance(searches, int) and searches >= 100:
+    # ── LOW WEIGHT signals (identity/verification — keep small)
+    if signals.get("verified_email"):
+        bonus += 0.005
+    if signals.get("verified_phone"):
+        bonus += 0.005
+    if signals.get("linkedin_connected"):
         bonus += 0.005
 
-    return min(1.05, bonus)
+    # ── Gate: unavailable candidates get no bonus
+    notice = signals.get("notice_period_days", 0)
+    open_to_work = signals.get("open_to_work_flag", False)
+    try:
+        if int(notice) > 90 and not open_to_work:
+            return 1.0  # no bonus for dead-lead candidates
+    except (TypeError, ValueError):
+        pass
+
+    return min(1.15, bonus)  # increased cap from 1.05 to 1.15
