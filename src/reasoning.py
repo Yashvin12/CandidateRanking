@@ -14,7 +14,7 @@ Usage
 
 from __future__ import annotations
 
-from src.config import MUST_HAVE_SKILL_GROUPS
+from src.config import MUST_HAVE_SKILL_GROUPS, TIER1_INDIA_CITIES, PREFERRED_LOCATIONS
 
 # Pre-build a flat set of must-have keywords (lowered) for skill extraction.
 _MUST_HAVE_KEYWORDS: dict[str, list[str]] = {
@@ -23,7 +23,13 @@ _MUST_HAVE_KEYWORDS: dict[str, list[str]] = {
 }
 
 
-def generate_reasoning(candidate: dict, subscores: dict) -> str:
+def generate_reasoning(
+    candidate: dict,
+    subscores: dict,
+    *,
+    rank: int = 0,
+    career_breakdown: dict | None = None,
+) -> str:
     """Generate a concise reasoning string for a candidate's ranking.
 
     Parameters
@@ -34,6 +40,11 @@ def generate_reasoning(candidate: dict, subscores: dict) -> str:
         Dict containing breakdown dicts from all scoring modules.
         Expected keys: ``skill_score``, ``career_score``, ``embedding_score``,
         ``behavioral``, ``skill_breakdown``.
+    rank:
+        1-based rank position. Concerns are suppressed for ranks 1-5.
+    career_breakdown:
+        Career scorer breakdown dict (contains ``consulting_only``,
+        ``title_chaser_penalty``, etc.).  Optional.
 
     Returns
     -------
@@ -75,6 +86,12 @@ def generate_reasoning(candidate: dict, subscores: dict) -> str:
             pass
 
     result = "; ".join(parts)
+
+    # ── Concern clause (ranks 6+) ─────────────────────────────────────────
+    if rank > 5:
+        concern = _pick_concern(candidate, subscores, career_breakdown)
+        if concern:
+            result += f"; Note: {concern}"
 
     # Truncate to 200 chars, clean up for CSV safety.
     if len(result) > 200:
@@ -196,3 +213,82 @@ def _build_location_notice(profile: dict, signals: dict) -> str | None:
             pass
 
     return " ".join(parts) if parts else None
+
+
+# Pre-built lowercase set of all recognised Indian locations.
+_INDIA_LOCATIONS_LOWER: set[str] = {
+    loc.lower() for loc in (TIER1_INDIA_CITIES | PREFERRED_LOCATIONS)
+}
+
+
+def _pick_concern(
+    candidate: dict,
+    subscores: dict,
+    career_breakdown: dict | None,
+) -> str | None:
+    """Return the single highest-priority concern string, or *None*.
+
+    Priority order (1 = highest):
+      1. Limited experience (<4 yr)
+      2. Long notice (>90 d)
+      3. Low platform engagement (behavioral < 0.6)
+      4. Consulting-only background
+      5. Frequent job-switching (title_chaser_penalty <= -8)
+      6. Based outside India
+    """
+    profile = candidate.get("profile") or {}
+    signals = candidate.get("redrob_signals") or {}
+    cb = career_breakdown or {}
+
+    # 1. Limited experience
+    yoe = profile.get("years_of_experience")
+    if yoe is not None:
+        try:
+            y = float(yoe)
+            if y < 4:
+                yr_display = str(int(y)) if y == int(y) else f"{y:.1f}"
+                return f"Limited experience ({yr_display}yr)"
+        except (ValueError, TypeError):
+            pass
+
+    # 2. Long notice period
+    notice = signals.get("notice_period_days")
+    if notice is not None:
+        try:
+            n = int(notice)
+            if n > 90:
+                return f"Long notice ({n}d)"
+        except (ValueError, TypeError):
+            pass
+
+    # 3. Low platform engagement
+    behav = subscores.get("behavioral", 1.0)
+    try:
+        if float(behav) < 0.6:
+            return "Low platform engagement"
+    except (ValueError, TypeError):
+        pass
+
+    # 4. Consulting-only background
+    if cb.get("consulting_only") is True:
+        return "Consulting-only background"
+
+    # 5. Frequent job-switching
+    tcp = cb.get("title_chaser_penalty")
+    if tcp is not None:
+        try:
+            if float(tcp) <= -8.0:
+                return "Frequent job-switching"
+        except (ValueError, TypeError):
+            pass
+
+    # 6. Based outside India
+    location = profile.get("location")
+    if location:
+        loc_lower = location.strip().lower()
+        # Check if any known Indian city name appears in the location string.
+        in_india = any(city in loc_lower for city in _INDIA_LOCATIONS_LOWER)
+        if not in_india and "india" not in loc_lower:
+            return "Based outside India"
+
+    return None
