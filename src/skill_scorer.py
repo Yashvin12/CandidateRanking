@@ -141,6 +141,20 @@ def compute_skill_score(candidate: dict) -> tuple[float, dict]:
     cred_penalty = _credibility_penalty(normed, desc_combined)
     running = max(0.0, running + cred_penalty)
 
+    # ── STEP 3b: LangChain-only penalty ──────────────────────────────────
+    # If the candidate's *only* retrieval-type skills are LangChain /
+    # OpenAI API (i.e. the production_retrieval group scored 0.0 from the
+    # skill list, so any credit came from career-description fallback) AND
+    # combined duration < 18 months, apply -8.0.
+    langchain_penalty = 0.0
+    lc_duration_sum = 0
+    for skill_lower, skill_dict in normed:
+        if "langchain" in skill_lower or "openai" in skill_lower:
+            lc_duration_sum += skill_dict.get("duration_months") or 0
+    if lc_duration_sum > 0 and lc_duration_sum < 18 and group_scores.get("production_retrieval", 0.0) == 0.0:
+        langchain_penalty = -8.0
+        running = max(0.0, running + langchain_penalty)
+
     # ── STEP 4: Assessment score bonus (max +5, total capped at 40) ──────
     assess_bonus = _assessment_bonus(candidate)
     final = min(40.0, running + assess_bonus)
@@ -153,6 +167,7 @@ def compute_skill_score(candidate: dict) -> tuple[float, dict]:
         **group_scores,
         "nice_to_have_bonus": nth_bonus,
         "credibility_penalty": cred_penalty,
+        "langchain_penalty": langchain_penalty,
         "assessment_bonus": assess_bonus,
         "wrong_domain_count": wrong_domain_count,
         "core_nlp_ir_count": core_nlp_ir_count,
@@ -312,6 +327,7 @@ def _empty_breakdown() -> dict:
         bd[group_name] = 0.0
     bd["nice_to_have_bonus"] = 0.0
     bd["credibility_penalty"] = 0.0
+    bd["langchain_penalty"] = 0.0
     bd["assessment_bonus"] = 0.0
     bd["wrong_domain_count"] = 0
     bd["core_nlp_ir_count"] = 0
