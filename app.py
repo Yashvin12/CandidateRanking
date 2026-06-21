@@ -154,6 +154,7 @@ if uploaded is not None:
                             "behav_mult": behav_mult,
                             "is_honeypot": is_hp,
                             "skill_breakdown": skill_bd,
+                            "career_breakdown": career_bd,
                         })
 
                         # Update progress bar every 1000 candidates
@@ -223,7 +224,9 @@ if uploaded is not None:
                         results.append({
                             "candidate_id": r["candidate_id"],
                             "final_score": round(final_score, 4),
-                            "reasoning": generate_reasoning(candidate_data, subscores),
+                            "candidate_data": candidate_data,
+                            "subscores": subscores,
+                            "career_breakdown": r.get("career_breakdown"),
                             "is_honeypot": r["is_honeypot"],
                         })
 
@@ -232,6 +235,15 @@ if uploaded is not None:
                         key=lambda r: (-r["final_score"], r["candidate_id"])
                     )
                     top_n = results[: min(100, len(results))]
+
+                    # Generate reasoning with rank known
+                    for rank, r in enumerate(top_n, start=1):
+                        r["reasoning"] = generate_reasoning(
+                            r["candidate_data"],
+                            r["subscores"],
+                            rank=rank,
+                            career_breakdown=r.get("career_breakdown"),
+                        )
 
                     elapsed = time.perf_counter() - t0
 

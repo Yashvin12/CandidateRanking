@@ -293,7 +293,7 @@ def run_pipeline(args: argparse.Namespace) -> None:
     # ===================================================================
     # STEP 8: Generate reasoning for top 100
     # ===================================================================
-    for r in top_100:
+    for rank, r in enumerate(top_100, start=1):
         subscores = {
             "skill_score": r["skill_score"],
             "career_score": r["career_score"],
@@ -301,7 +301,12 @@ def run_pipeline(args: argparse.Namespace) -> None:
             "behavioral": r["behav_mult"],
             "skill_breakdown": r["skill_breakdown"],
         }
-        r["reasoning"] = generate_reasoning(r["candidate"], subscores)
+        r["reasoning"] = generate_reasoning(
+            r["candidate"],
+            subscores,
+            rank=rank,
+            career_breakdown=r.get("career_breakdown"),
+        )
 
     # ===================================================================
     # STEP 9: Write CSV

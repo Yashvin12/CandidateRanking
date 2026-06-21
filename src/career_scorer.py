@@ -118,7 +118,8 @@ def compute_career_score(
     exp_score = _dimension_experience(years)
 
     # ── D: Description analysis (bonus/penalty) ──────────────────────────
-    prod_bonus, nontech_penalty, mismatch_penalty, title_desc_mismatch = (
+    prod_bonus, nontech_penalty, mismatch_penalty, title_desc_mismatch, \
+        code_count, no_code_penalty = (
         _dimension_description(current_title, career_history)
     )
 
@@ -137,10 +138,27 @@ def compute_career_score(
     # 2 short stints = warning-level penalty.
     title_chaser_penalty, short_stint_count = _dimension_title_chaser(career_history)
 
+    # ── G: Hard consulting gate (0 or −10) ───────────────────────────────
+    # Pure consulting candidates cannot reach a career score above ~10 even
+    # with a great ML title and 8 years experience.  The gate fires when
+    # the heuristic flags consulting_only AND the LLM either has no data or
+    # independently confirms pure consulting.
+    hard_consulting_penalty = 0.0
+    if consulting_only:
+        cid = candidate.get("candidate_id", "")
+        llm_entry = (llm_features or {}).get(cid, {})
+        llm_confirms_or_absent = (
+            not llm_entry                                       # no LLM data
+            or llm_entry.get("is_pure_consulting", False)       # LLM agrees
+        )
+        if llm_confirms_or_absent:
+            hard_consulting_penalty = -10.0
+
     raw = (
         company_score + title_score + exp_score
         + prod_bonus + nontech_penalty + mismatch_penalty
-        + llm_adj + title_chaser_penalty
+        + no_code_penalty
+        + llm_adj + title_chaser_penalty + hard_consulting_penalty
     )
     total = max(0.0, min(30.0, raw))
 
@@ -151,7 +169,10 @@ def compute_career_score(
         "production_bonus": prod_bonus,
         "nontech_penalty": nontech_penalty,
         "mismatch_penalty": mismatch_penalty,
+        "code_count": code_count,
+        "no_code_penalty": no_code_penalty,
         "consulting_only": consulting_only,
+        "hard_consulting_penalty": hard_consulting_penalty,
         "title_description_mismatch": title_desc_mismatch,
         "llm_adjustment": llm_adj,
         "llm_breakdown": llm_bd,
@@ -431,23 +452,22 @@ def _count_kw_hits_deduped(roles: list[dict], keywords: list[str]) -> int:
 def _dimension_description(
     current_title: str,
     career_history: list[dict],
-) -> tuple[float, float, float, bool]:
+) -> tuple[float, float, float, bool, int, float]:
     """Returns (production_bonus, nontech_penalty, mismatch_penalty,
-    title_description_mismatch).
+    title_description_mismatch, code_count, no_code_penalty).
 
     Uses per-role deduplication so that recycled / copy-pasted descriptions
     don't multiply keyword counts.  Each keyword is counted at most once
     regardless of how many roles mention it (fixes 3A and 3B).
     """
     if not career_history:
-        return 0.0, 0.0, 0.0, False
+        return 0.0, 0.0, 0.0, False, 0, 0.0
 
     # Deduplicated counts: a keyword found in 5 identical descriptions still
     # counts as 1.  Only the *presence* of a keyword across any role matters.
     production_count = _count_kw_hits_deduped(career_history, _PROD_KW_LOWER)
     nontech_count    = _count_kw_hits_deduped(career_history, _NONTECH_KW_LOWER)
-    # code_count tracked for potential future use, not applied to score.
-    # code_count = _count_kw_hits_deduped(career_history, _CODE_KW_LOWER)
+    code_count       = _count_kw_hits_deduped(career_history, _CODE_KW_LOWER)
 
     # Production bonus
     if production_count >= 3:
@@ -475,4 +495,15 @@ def _dimension_description(
         mismatch_penalty = -8.0
         title_desc_mismatch = True
 
-    return bonus, penalty, mismatch_penalty, title_desc_mismatch
+    # No-code penalty: candidates with zero code-writing AND zero production
+    # evidence across all career descriptions.  Proxy for "no code in recent
+    # history" — we can't check dates but absence of any code-writing language
+    # is the best heuristic available.
+    no_code_penalty = 0.0
+    if code_count == 0 and production_count == 0:
+        if _fuzzy_match_title(current_title, _ML_AI_LOWER):
+            no_code_penalty = -5.0
+        elif _fuzzy_match_title(current_title, _ADJACENT_LOWER):
+            no_code_penalty = -2.0
+
+    return bonus, penalty, mismatch_penalty, title_desc_mismatch, code_count, no_code_penalty
