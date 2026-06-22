@@ -220,6 +220,23 @@ _INDIA_LOCATIONS_LOWER: set[str] = {
     loc.lower() for loc in (TIER1_INDIA_CITIES | PREFERRED_LOCATIONS)
 }
 
+# Indian state / territory names — fallback for Tier 2/3 cities not in the
+# explicit city sets.  Catches "Indore, Madhya Pradesh", "Trivandrum, Kerala",
+# "Coimbatore, Tamil Nadu", etc.
+_INDIA_STATES_LOWER: set[str] = {
+    s.lower() for s in {
+        "Andhra Pradesh", "Arunachal Pradesh", "Assam", "Bihar",
+        "Chhattisgarh", "Goa", "Gujarat", "Haryana", "Himachal Pradesh",
+        "Jharkhand", "Karnataka", "Kerala", "Madhya Pradesh", "Maharashtra",
+        "Manipur", "Meghalaya", "Mizoram", "Nagaland", "Odisha", "Punjab",
+        "Rajasthan", "Sikkim", "Tamil Nadu", "Telangana", "Tripura",
+        "Uttar Pradesh", "Uttarakhand", "West Bengal",
+        # Union territories
+        "Chandigarh", "Delhi", "Jammu and Kashmir", "Ladakh",
+        "Lakshadweep", "Puducherry", "Andaman and Nicobar",
+    }
+}
+
 
 def _pick_concern(
     candidate: dict,
@@ -283,12 +300,20 @@ def _pick_concern(
             pass
 
     # 6. Based outside India
+    # Three-layer check: (a) country field, (b) known city names,
+    # (c) Indian state names in location string.
+    country = (profile.get("country") or "").strip().lower()
     location = profile.get("location")
     if location:
         loc_lower = location.strip().lower()
-        # Check if any known Indian city name appears in the location string.
-        in_india = any(city in loc_lower for city in _INDIA_LOCATIONS_LOWER)
-        if not in_india and "india" not in loc_lower:
+        in_india = (
+            country == "india"
+            or any(city in loc_lower for city in _INDIA_LOCATIONS_LOWER)
+            or any(state in loc_lower for state in _INDIA_STATES_LOWER)
+            or "india" in loc_lower
+        )
+        if not in_india:
             return "Based outside India"
 
     return None
+
