@@ -12,16 +12,19 @@ primary_contact:
   phone: "9373912857"        # Fill in your phone number
 
 team_members:
-  - name: "Akanksha Shirke"
-    email: "akankshashirke3107@gmail.com"      # Fill in your email
+  - name: "Yashvin Mehra"
+    email: "yashvinmehra@gmail.com"
     role: "ML Engineer / Team Lead"
+  - name: "Akanksha Shirke"
+    email: "akankshashirke3107@gmail.com"
+    role: "ML Engineer"
 
 # ============================================================================
 # Code and reproducibility
 # ============================================================================
 github_repo: "https://github.com/Yashvin12/CandidateRanking"
 
-sandbox_link: ""   # Fill in your Streamlit Cloud / HuggingFace Space URL once deployed
+sandbox_link: "https://candidateranking.streamlit.app/"
 
 reproduce_command: "python rank.py --candidates ./India_runs_data_and_ai_challenge/candidates.jsonl --output ./submission.csv"
 
