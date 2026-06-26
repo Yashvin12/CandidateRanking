@@ -299,7 +299,7 @@ def _dimension_experience(years: float | int | None) -> float:
 
 # JD states: candidates who switch every 1.5 years = not a fit, 3+ year
 # commitment expected. 18 months (1.5yr) is the per-role threshold.
-_TITLE_CHASER_THRESHOLD_MONTHS: int = 18
+_TITLE_CHASER_THRESHOLD_MONTHS: int = 12  # Lowered from 18: JD says "1.5yr switching", but 12-16mo stints at product companies (Swiggy, Uber, Zomato) are not title-chasing
 _TITLE_CHASER_HARD_PENALTY: float = -8.0   # 3+ short stints → disqualifier
 _TITLE_CHASER_WARN_PENALTY: float = -3.0   # 2 short stints → warning
 _TITLE_CHASER_MIN_HARD: int = 3             # stints below threshold to trigger hard

@@ -88,9 +88,11 @@ _M1_MIN_FABRICATED_SKILLS: int = 5
 _M1_MAX_DURATION_MONTHS: int = 3
 
 # TUNING: M3 requires multiple duplicate pairs to fire.  One duplicate pair
-#         is common noise in synthetic data (~24K candidates).  Requiring ≥2
-#         pairs is much more selective.  Increase to 3 if still too noisy.
-_M3_MIN_DUPLICATE_PAIRS: int = 2
+#         is common noise in synthetic data (~24K candidates).  Requiring ≥3
+#         pairs is much more selective — ≥2 caught too many synthetic data
+#         artifacts (e.g. candidates with careers at product companies where
+#         descriptions are recycled by the data generator).
+_M3_MIN_DUPLICATE_PAIRS: int = 3
 
 # TUNING: H5 max-possible-experience overshoot thresholds.
 #         Diagnostic on 100K dataset (scratch_h5_diagnostic.py):
@@ -106,7 +108,7 @@ _H5_HEAVY_OVERSHOOT: float = 0.5      # HEAVY strike (2.0 pts) — unchanged
 _L1_MAX_COMPLETENESS: float = 30.0
 _L1_MIN_EXPERT_SKILLS: int = 3
 
-_L2_SALARY_GAP_MIN: float = 5.0
+_L2_SALARY_GAP_MIN: float = 2.0  # Lowered from 5.0 — catches small inversions like 21.8>18.9
 _L2_SALARY_GAP_MAX: float = _H1_SALARY_GAP_THRESHOLD  # must be <= _H1 threshold
 
 # TUNING: L3 moderate temporal gap range.  Independent of H2 so that tuning
@@ -378,7 +380,7 @@ def _check_h6_tech_existence(candidate: dict) -> _Strike | None:
             if tech_kw in name_lower:
                 max_possible_months = (REFERENCE_YEAR - birth_year) * 12
                 try:
-                    if int(duration) > max_possible_months + 6:  # 6mo grace
+                    if int(duration) > max_possible_months + 12:  # 12mo grace (beta access before public release)
                         violations.append(
                             f"{skill.get('name')}({prof}): "
                             f"{duration}mo claimed vs {max_possible_months}mo max "
@@ -546,7 +548,7 @@ def _check_m4_skill_career_span(candidate: dict) -> _Strike | None:
             "M4", _HEAVY,
             f"Skill duration massively exceeds career: {violations[0]}, ...",
         )
-    elif len(violations) >= 2:
+    elif len(violations) >= 3:  # Raised from 2 → 3 to reduce synthetic data false positives
         return _Strike(
             "M4", _MEDIUM,
             f"Skill duration exceeds career span ({len(violations)} skills): "

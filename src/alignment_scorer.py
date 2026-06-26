@@ -19,10 +19,11 @@ Usage
 
 from __future__ import annotations
 
-from src.config import PREFERRED_LOCATIONS, TIER1_INDIA_CITIES
+from src.config import PREFERRED_LOCATIONS, TIER1_INDIA_CITIES, NON_TECH_TITLES
 
 _PREFERRED_LOWER: list[str] = [loc.lower() for loc in PREFERRED_LOCATIONS]
 _TIER1_LOWER:     list[str] = [loc.lower() for loc in TIER1_INDIA_CITIES]
+_NON_TECH_LOWER:  list[str] = [t.lower() for t in NON_TECH_TITLES]
 
 # Education field tiers (checked in order — first match wins)
 _FIELD_TIER1: list[str] = [
@@ -75,11 +76,25 @@ def compute_alignment_score(
     raw = location_score + education_score + notice_score + domain_penalty
     total = max(0.0, min(15.0, raw))
 
+    # ── Non-tech title gate (JD: CV/robotics/non-tech without NLP/IR = disqualifier) ──
+    # If the candidate's current title is clearly non-technical AND they have
+    # zero core NLP/IR skills, location+education alone should not float them
+    # into top rankings. Cap alignment at 2.0 as a soft gate.
+    profile = candidate.get("profile") or {}
+    current_title = (profile.get("current_title") or "").lower()
+    core_nlp_ir = skill_breakdown.get("core_nlp_ir_count", 0)
+    is_non_tech_title = any(nt in current_title for nt in _NON_TECH_LOWER)
+    non_tech_gated = False
+    if is_non_tech_title and core_nlp_ir == 0:
+        total = min(total, 2.0)
+        non_tech_gated = True
+
     breakdown = {
         "location_score": location_score,
         "education_score": education_score,
         "notice_score": notice_score,
         "domain_penalty": domain_penalty,
+        "non_tech_gated": non_tech_gated,
         "total": round(total, 2),
     }
     return round(total, 2), breakdown
@@ -177,11 +192,12 @@ def _dimension_notice(candidate: dict) -> float:
     if notice <= 30:
         return 3.0
     if notice <= 60:
-        return 2.5
-    if notice < 90:          # tightened: exactly 90d now falls into the lower bracket
-        return 2.0 if open_to_work else 1.5
+        # JD: "bar gets higher" past 30 days — steeper cliff from 3.0 → 1.5
+        return 1.5
+    if notice < 90:
+        return 1.0 if open_to_work else 0.5
     # notice >= 90 — consistent with behavioral.py >=90 heavy penalty
-    return 1.0 if open_to_work else 0.5
+    return 0.5 if open_to_work else 0.0
 
 
 # ═══════════════════════════════════════════════════════════════════════════
