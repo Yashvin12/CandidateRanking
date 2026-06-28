@@ -2,11 +2,13 @@
 
 A multi-stage candidate ranking system for the Redrob AI & Data hackathon. The pipeline ranks the top 100 candidates from a 100K+ pool against a Machine Learning Engineer job description, within a strict 5-minute CPU compute budget.
 
+📦 **GitHub:** [Yashvin12/CandidateRanking](https://github.com/Yashvin12/CandidateRanking) &nbsp;|&nbsp; 🌐 **Live App:** [candidateranking.streamlit.app](https://candidateranking.streamlit.app/) &nbsp;|&nbsp; 🎬 **[Demo Video](https://drive.google.com/file/d/1qsHsBmETFGYGECUbzFCI40EZZmmNJB0Q/view?usp=drive_link)**
+
 ---
 
 ## Architecture Overview
 
-The system uses **Architecture B: Offline LLM Feature Extraction + Structured Ranker**.
+The system uses **Architecture: Offline LLM Feature Extraction + Structured Ranker**.
 
 ```
 candidates.jsonl
@@ -35,6 +37,15 @@ submission.csv (Top 100)
 ```
 
 **Maximum possible score**: 40 (skill) + 30 (career) + 15 (alignment) + 15 (embedding) = **100 points**, then multiplied by behavioral and contradiction multipliers.
+
+---
+
+## 📚 Documentation
+
+| Document | Description |
+|---|---|
+| [docs/architecture.md](docs/architecture.md) | Deep-dive into the multi-stage pipeline, scoring logic, and design decisions |
+| [docs/results.md](docs/results.md) | Ranking results, score distributions, and top-candidate analysis |
 
 ---
 
@@ -105,7 +116,10 @@ python -m src.llm_extractor \
   --resume
 
 # Using Groq (free tier)
+# Windows:
 set GROQ_API_KEY=gsk_...
+# Linux / macOS:
+export GROQ_API_KEY=gsk_...
 python -m src.llm_extractor \
   --candidates ./India_runs_data_and_ai_challenge/candidates.jsonl \
   --top-ids data/top_1000_ids.txt \
@@ -141,6 +155,10 @@ CandidateRanking/
 │   ├── llm_features.jsonl      # Pre-computed LLM features (Top-1000)
 │   ├── company_classifications.json
 │   └── top_1000_ids.txt
+│
+├── docs/
+│   ├── architecture.md         # Pipeline design & scoring deep-dive
+│   └── results.md              # Ranking results & analysis
 │
 └── India_runs_data_and_ai_challenge/
     ├── candidates.jsonl         # Full 100K dataset (not in git)
