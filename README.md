@@ -168,7 +168,21 @@ A Streamlit app (`app.py`) is included for end-to-end demo on small candidate sa
 streamlit run app.py
 ```
 
-The hosted sandbox is available at: *(link to be added before submission)*
+🌐 **Live hosted app:** [candidateranking.streamlit.app](https://candidateranking.streamlit.app/)
+
+---
+
+## 🎬 Demo Video
+
+A full end-to-end walkthrough of the ranking pipeline — including dataset upload, candidate ranking, and CSV export — is available here:
+
+**[▶ Watch Demo on Google Drive](https://drive.google.com/file/d/1qsHsBmETFGYGECUbzFCI40EZZmmNJB0Q/view?usp=drive_link)**
+
+The demo covers:
+- Uploading the candidate dataset via the Streamlit UI
+- Running the multi-stage ranking pipeline
+- Viewing ranked results and exporting `submission.csv`
+- Live walkthrough of the scoring logic
 
 ---
 
