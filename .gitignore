@@ -137,7 +137,6 @@ llm_precomputation/
 # Local-only dev/testing directories (kept locally, not tracked in git)
 experiments/
 scripts/
-docs/
 
 # Scratch / temp files
 scratch_*.py
